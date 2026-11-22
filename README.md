@@ -1,5 +1,28 @@
 # NeonClipping
 
+## Windows setup for this checkout
+
+This checkout contains the local Trend Edit workflow, creator queue, and YouTube review and scheduling controls. The original NeonClipping project and license are credited below.
+
+Use Python 3.12 and put `ffmpeg` and `ffprobe` on PATH. Run these commands in PowerShell from the repository root:
+
+```powershell
+py -3.12 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r '.\YouTube Workflow
+equirements.txt'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\YouTube Workflow\Start YouTube Queue.ps1'
+```
+
+For the cached local speech model used by the drop folder, run this once while online:
+
+```powershell
+& .\.venv\Scripts\python.exe -c "from faster_whisper.utils import download_model; download_model('small', cache_dir='Data/models')"
+```
+
+Open the editor at http://127.0.0.1:8770 and the review queue at http://127.0.0.1:8772. For YouTube uploads, enable the YouTube Data API for your Google Cloud project, create a Desktop OAuth client, and save its JSON as `YouTube Workflow/Settings/client_secret.json`. Use **Connect YouTube** in the queue to authorize your own channel. Local editing and queue review work before you connect an account.
+
+The launcher creates local folders as needed. Each installation has its own clips, creator profiles, queue and system keyring credentials.
+
 **Paste a link. Get captioned 9:16 clips in about two minutes. Free, local, open-source.**
 
 NeonClipping turns long YouTube / Twitch / Kick videos (or your own MP4) into vertical, captioned clips with a title and hook for each. Everything runs on your machine: no account, no subscription, no upload.

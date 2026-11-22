@@ -137,7 +137,7 @@ class Plan:
 
     @property
     def active(self):
-        return any((self.template != 'none', self.bg_mode, self.padding > 0, self.watermark, self.music, self.credit, self.outro_text))
+        return any((self.template != 'none', self.bg_mode, self.padding > 0, self.watermark, self.music, self.voiceover, self.credit, self.outro_text))
 
     # ---- video graph
     def graph(self, base_graph, src, width, height, duration):
@@ -332,15 +332,32 @@ class Plan:
     # ---- audio
     def audio(self, duration):
         """-> (filter_complex_part or None, map label or None). Source audio is label [0:a]."""
-        if not self.music:
+        if not self.music and not self.voiceover:
             return None, None
-        idx = self.add_input(['-stream_loop', '-1', '-i', str(self.music)])
-        d, v, p, r = duration, self.music_volume, self.music_peak, min(self.music_riser, duration)
-        rise = f"if(lt(t,{d - r:.3f}),{v:.3f},{v:.3f}+({p:.3f}-{v:.3f})*(t-{d - r:.3f})/{r:.3f})"
-        bed = f"[{idx}:a]atrim=0:{d:.3f},asetpts=PTS-STARTPTS,volume='{rise}':eval=frame[bed]"
-        if self.has_audio:
-            return bed + ';[0:a]aresample=48000[voice];[voice][bed]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[aout]', '[aout]'
-        return bed + ';[bed]anull[aout]', '[aout]'
+        filters = []
+        if self.music:
+            idx = self.add_input(['-stream_loop', '-1', '-i', str(self.music)])
+            d, v, p, r = duration, self.music_volume, self.music_peak, min(self.music_riser, duration)
+            rise = f"if(lt(t,{d - r:.3f}),{v:.3f},{v:.3f}+({p:.3f}-{v:.3f})*(t-{d - r:.3f})/{r:.3f})"
+            filters.append(f"[{idx}:a]atrim=0:{d:.3f},asetpts=PTS-STARTPTS,volume='{rise}':eval=frame[bed]")
+        if not self.voiceover:
+            if self.has_audio:
+                filters.append('[0:a]aresample=48000[voice];[voice][bed]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[aout]')
+            else:
+                filters.append('[bed]anull[aout]')
+            return ';'.join(filters), '[aout]'
+
+        idx = self.add_input(['-i', str(self.voiceover)])
+        filters.append(f'[{idx}:a]aresample=48000,asetpts=PTS-STARTPTS,apad,atrim=duration={duration:.6f}[narration]')
+        tracks = ['[narration]']
+        if self.has_audio and self.voiceover_source_volume > 0:
+            filters.append(f'[0:a]aresample=48000,volume={self.voiceover_source_volume:.3f}[original]')
+            tracks.append('[original]')
+        if self.music:
+            tracks.append('[bed]')
+        mix = f'amix=inputs={len(tracks)}:duration=first:normalize=0,' if len(tracks) > 1 else ''
+        filters.append(''.join(tracks) + mix + 'alimiter=limit=.95:level=0:latency=1[aout]')
+        return ';'.join(filters), '[aout]'
 
 
 def plan(body, data):
@@ -356,7 +373,8 @@ def plan(body, data):
         padding=number(body.get('padding'), 0, 0, 25, 'Padding'), radius=number(body.get('radius'), 0, 0, 80, 'Corner radius'),
         bg_color=hexcolor(body.get('bg_color'), '#0b0912'), bg_color2=hexcolor(body.get('bg_color2'), '#ff4ba5'),
         bg_dim=number(body.get('bg_dim'), 0.25, 0, 0.9, 'Background dim'), bg_blur=number(body.get('bg_blur'), 24, 0, 60, 'Background blur'),
-        bg_image=None, watermark=None, music=None,
+        bg_image=None, watermark=None, music=None, voiceover=None,
+        voiceover_source_volume=number(body.get('voiceover_source_volume'), .25, 0, 1, 'Original sound level'),
         watermark_pos=str(body.get('watermark_pos') or 'tr'), watermark_size=number(body.get('watermark_size'), 16, 5, 40, 'Watermark size'),
         watermark_opacity=number(body.get('watermark_opacity'), 0.85, 0.1, 1, 'Watermark opacity'),
         credit=text_field(body.get('credit'), 60, 'credit'),
@@ -367,7 +385,7 @@ def plan(body, data):
     )
     if spec['watermark_pos'] not in WM_POS:
         raise ValueError('Watermark position must be tl, tr, bl or br.')
-    for key, field, kind in (('bg_image', 'bg_image', 'image'), ('watermark', 'watermark_image', 'image'), ('music', 'music', 'audio')):
+    for key, field, kind in (('bg_image', 'bg_image', 'image'), ('watermark', 'watermark_image', 'image'), ('music', 'music', 'audio'), ('voiceover', 'voiceover', 'audio')):
         if body.get(field):
             p = asset_path(data, body.get(field), kind)
             if p is None:

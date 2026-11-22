@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="workflow-token" content="__WORKFLOW_TOKEN__">
+<title>NeonClipping YouTube Queue</title>
+<style>
+:root{color-scheme:dark;font:16px/1.5 system-ui,sans-serif;background:#12141b;color:#eee}
+*{box-sizing:border-box}
+body{margin:0 auto;padding:clamp(1rem,5vw,3.5rem);max-width:920px}
+h1{font-size:clamp(2rem,4vw,2.8rem);margin:0 0 .3rem;letter-spacing:-.04em}
+h2{font-size:1.15rem;margin:0}
+p{margin:.45rem 0;color:#c7c7d3}
+section{margin-top:1.2rem;padding:1.2rem;background:#1b1e29;border:1px solid #373b4c;border-radius:14px}
+a{color:#d6ceff}
+button{font:inherit;color:#f4f0ff;background:#343047;border:1px solid #68617c;padding:.45rem .85rem;border-radius:8px;cursor:pointer}
+button.primary{color:#181123;background:#d6ceff;font-weight:700}
+button:disabled{opacity:.5;cursor:default}
+select,input[type=datetime-local],input[type=url],input[type=number]{font:inherit;color:inherit;background:#151822;border:1px solid #68617c;padding:.4rem .6rem;border-radius:8px}
+.publish-controls{display:flex;flex-wrap:wrap;gap:.7rem 1rem;align-items:center;margin-top:.8rem}
+.publish-controls label{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.publish-controls [hidden]{display:none}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #d6ceff;outline-offset:3px}
+code{color:#e3dbff;overflow-wrap:anywhere}
+.row{display:flex;align-items:center;justify-content:space-between;gap:.7rem;flex-wrap:wrap}
+.item{border-top:1px solid #383b4a;padding:.75rem 0}
+.item p{font-size:.92rem;margin:.2rem 0}
+.item label{display:flex;gap:.65rem;align-items:baseline}
+#message{color:#f9ce94}
+</style>
+<h1>YouTube queue</h1>
+<p>Drop in a video, review the clips, then keep them private or schedule their release.</p>
+<a href="http://127.0.0.1:8770/" target="_blank" rel="noopener">Open NeonClipping</a>
+<main>
+<section>
+<h2>Drop folder</h2>
+<code id="drop">Drop videos here</code>
+<p>Keep NeonClipping and this workflow running while videos are processed. Originals stay in the drop folder.</p>
+<div id="sources"></div>
+</section>
+<section>
+<div class="row"><h2>YouTube channel</h2><button id="connect" disabled>Connect YouTube</button></div>
+<p id="account" aria-live="polite"></p>
+<div id="setup" hidden>
+<p>In Google Cloud, enable <strong>YouTube Data API v3</strong> and create a <strong>Desktop app</strong> OAuth client. Add your Google account as a test user if the consent screen is in Testing.</p>
+<p>Save the downloaded client JSON as <code>Settings\client_secret.json</code> inside <code>YouTube Workflow</code>, then select <strong>Connect YouTube</strong>.</p>
+<a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google Cloud OAuth clients</a>
+</div>
+</section>
+<section id="creator-panel">
+<h2>Creator queue</h2>
+<p>Up to 3 selected clips per creator and 20 total per day, using India time. The live recorder handles one stream at a time.</p>
+<div id="creator-list"></div>
+<details id="creator-editor">
+<summary id="creator-editor-title">Add a creator</summary>
+<form id="creator-form">
+<label for="creator-name">Creator name</label>
+<input id="creator-name" maxlength="80" required>
+<label for="creator-url">YouTube channel, live link, or Twitch channel</label>
+<input id="creator-url" type="url" maxlength="250" required>
+<label for="creator-campaign">Campaign link (optional)</label>
+<input id="creator-campaign" type="url" maxlength="500">
+<label for="creator-tags">Hashtags</label>
+<input id="creator-tags" maxlength="200" placeholder="#GTA6 #GTAVI">
+<label for="creator-mode">YouTube visibility</label>
+<select id="creator-mode">
+<option value="review">Local review</option>
+<option value="private">Upload privately</option>
+<option value="schedule">Schedule public release automatically</option>
+</select>
+<p><label><input id="creator-disclosure" type="checkbox"> Clips require a paid-promotion disclosure in YouTube Studio</label></p>
+<p><label><input id="creator-certified" type="checkbox"> I have the rights to use this source, confirm its campaign permits the selected visibility and workflow, and certify compliance with YouTube's <a href="https://www.youtube.com/t/community_guidelines" target="_blank" rel="noopener">Community Guidelines</a>.</label></p>
+<div class="row">
+<button type="submit" class="primary" id="creator-save">Add creator</button>
+<button type="button" id="creator-cancel" hidden>Cancel edit</button>
+</div>
+</form>
+</details>
+<p id="creator-message" role="status"></p>
+</section>
+<section id="live-panel" hidden>
+<h2>Automatic live uploads</h2>
+<p>NeonClipping checks up to every 10 minutes for the strongest live highlights and uploads qualifying clips as Private to your connected channel.</p>
+<form id="live-form">
+<label for="live-url">YouTube Live or Twitch link</label>
+<input id="live-url" type="url" placeholder="https://www.youtube.com/watch?v=..." required style="width:100%">
+<div class="publish-controls">
+<label>Upload limit per 24 hours <input id="live-cap" type="number" min="1" max="100" value="100" required></label>
+<label>Stop after (hours) <input id="live-hours" type="number" min="1" max="24" value="6" required></label>
+</div>
+<p><label><input id="live-certified" type="checkbox" required> I have the rights to upload clips from this stream and certify they comply with YouTube's <a href="https://www.youtube.com/t/community_guidelines" target="_blank" rel="noopener">Community Guidelines</a>.</label></p>
+<div class="row">
+<button class="primary" id="live-start" type="submit" disabled>Start automatic private uploads</button>
+<button id="live-stop" type="button" disabled>Stop automatic uploads</button>
+</div>
+</form>
+<p id="live-status" role="status"></p>
+<p class="note" id="live-message" role="status"></p>
+</section>
+<section>
+<div class="row"><h2 id="review-clips">Review clips</h2><button id="upload" class="primary" disabled>Upload selected as private</button></div>
+<div class="publish-controls">
+<label>After approval
+<select id="publication">
+<option value="private">Keep private</option>
+<option value="schedule">Schedule to go public</option>
+</select>
+</label>
+<label id="schedule-fields" hidden>Publish on
+<input id="publish-at" type="datetime-local" step="60" aria-describedby="schedule-help">
+</label>
+</div>
+<p id="schedule-help" hidden></p>
+<div class="row">
+<label><input type="checkbox" id="select-all" disabled> Select all</label>
+<button id="remove-selected" type="button" disabled>Remove selected</button>
+</div>
+<p id="message" role="status"></p>
+<div id="clips"></div>
+<details id="removed-clips-panel" hidden>
+<summary id="removed-clips-summary">Recently removed</summary>
+<div class="row">
+<label><input type="checkbox" id="restore-all" aria-label="Select all recently removed clips" disabled> Select all</label>
+<button id="restore-selected" type="button" disabled>Restore selected</button>
+</div>
+<div id="removed-clips"></div>
+</details>
+</section>
+</main>
+<script>
+const token = document.querySelector('meta[name="workflow-token"]').content;
+const el = id => document.getElementById(id);
+const picked = new Set();
+const pickedRemoved = new Set();
+const removableStatuses = new Set(['review','creator_candidate','live_candidate','uploaded','scheduled']);
+let editingCreator = null;
+let current, snapshot, busy = false, liveBusy = false;
+const statuses = {creator_candidate:'Waiting for automatic selection',live_candidate:'Live highlight candidate',review:'Ready for review',approved:'Approved for private upload',uploading:'Uploading privately',uploaded:'Uploaded as private',scheduled:'Scheduled on YouTube',check:'Check YouTube Studio'};
+const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const publicationFormat = new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium', timeStyle: 'short',
+});
+function create(tag, text) {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    return node;
+}
+function link(text, url) {
+    const anchor = create('a', text);
+    anchor.href = url; anchor.target = '_blank'; anchor.rel = 'noopener noreferrer';
+    return anchor;
+}
+async function post(path, body = {}) {
+    const response = await fetch(path, {method:'POST', headers:{
+        'Content-Type':'application/json', 'X-Workflow-Token':token
+    }, body:JSON.stringify(body)});
+    if (!response.ok) {
+        const info = await response.json().catch(() => ({}));
+        throw Error(info.detail || 'Refresh the queue and try again.');
+    }
+    return response.json();
+}
+function error(err) { el('message').textContent = err.message; }
+function removableClips() {
+    return (current?.clips || []).filter(clip => removableStatuses.has(clip.status));
+}
+
+function buttons() {
+    const scheduled = Boolean(current?.schedule_min_minutes) && el('publication').value === 'schedule';
+    const removable = removableClips();
+    const selected = removable.filter(clip => picked.has(clip.id));
+    const selectAll = el('select-all');
+    selectAll.disabled = busy || !removable.length;
+    selectAll.checked = removable.length > 0 && selected.length === removable.length;
+    selectAll.indeterminate = selected.length > 0 && selected.length < removable.length;
+    el('remove-selected').disabled = busy || !selected.length;
+    el('remove-selected').textContent = selected.length ? 'Remove selected (' + selected.length + ')' : 'Remove selected';
+    const canUpload = selected.length && selected.length <= 30 && selected.every(clip => clip.status === 'review');
+    el('upload').disabled = busy || !current?.channel || !canUpload || (scheduled && !el('publish-at').value);
+    el('upload').textContent = scheduled ? 'Approve and schedule' : 'Upload selected as private';
+    el('connect').disabled = busy || !current?.configured;
+    el('publication').disabled = busy || !current?.schedule_min_minutes;
+    el('publish-at').disabled = busy;
+    el('schedule-fields').hidden = !scheduled;
+    el('schedule-help').hidden = !scheduled;
+    restoreButtons();
+}
+
+function restoreButtons() {
+    const clips = current?.removed_clips || [];
+    const selected = clips.filter(clip => pickedRemoved.has(clip.id)).length;
+    const selectAll = el('restore-all');
+    selectAll.disabled = busy || clips.length === 0;
+    selectAll.checked = clips.length > 0 && selected === clips.length;
+    selectAll.indeterminate = selected > 0 && selected < clips.length;
+    el('restore-selected').disabled = busy || selected === 0;
+    el('restore-selected').textContent = selected ? 'Restore selected (' + selected + ')' : 'Restore selected';
+}
+function queueAction(text, action, clip) {
+    const button = create('button', text);
+    button.type = 'button';
+    button.setAttribute('aria-label', text + ': ' + clip.title);
+    button.onclick = async () => {
+        if (action === 'remove') {
+            const youtube = clip.status === 'scheduled' ? ' Its YouTube publication schedule will stay active.' :
+                clip.youtube_id ? ' The YouTube upload will stay available in Studio.' : '';
+            if (!confirm('Remove "' + clip.title + '" from this queue?' + youtube)) return;
+        }
+        button.disabled = true;
+        try {
+            await post('/review/' + clip.id + '/' + action);
+            el('message').textContent = action === 'remove' ?
+                'Clip removed. You can restore it under Recently removed.' : 'Clip restored to the queue.';
+            await refresh();
+        } catch (err) {
+            error(err);
+            button.disabled = false;
+        }
+    };
+    return button;
+}
+
+function publicationLabel(clip) {
+    if (!clip.publish_at || !['approved','uploading','scheduled'].includes(clip.status)) {
+        return statuses[clip.status];
+    }
+    const moment = new Date(clip.publish_at);
+    const when = publicationFormat.format(moment) + ' (' + localZone + ')';
+    if (clip.status === 'scheduled') {
+        return moment > Date.now() ? 'Scheduled to go public ' + when : 'Scheduled for ' + when + ' · Check YouTube Studio for current visibility';
+    }
+    return (clip.status === 'approved' ? 'Approved to go public ' : 'Uploading privately for release ') + when;
+}
+function liveButtons() {
+    const active = current?.live_upload?.status === 'active';
+    const stopped = current?.live_upload?.status === 'stopped';
+    el('live-start').disabled = liveBusy || active || !current?.channel;
+    el('live-stop').disabled = liveBusy || !current?.live_upload || stopped;
+}
+function show(s) {
+    current = s;
+    el('live-panel').hidden = !s.live_upload_supported;
+    const live = s.live_upload;
+    if (live) {
+        const label = {active:'Automatic private uploads on', ended:'Recording finished', stopped:'Automatic uploads off'}[live.status];
+        el('live-status').textContent = label + ' · ' + live.detail;
+    } else {
+        el('live-status').textContent = 'Automatic uploads are off.';
+    }
+    liveButtons();
+    el('schedule-help').textContent = 'Times use ' + localZone + '. Choose at least ' + s.schedule_min_minutes + ' minutes from now. YouTube handles publication once it confirms the schedule.';
+    const roster = el('creator-list');
+    roster.replaceChildren();
+    for (const creator of s.creators || []) {
+        const card = create('div'); card.className = 'item';
+        const mode = {review:'Local review',private:'Automatic private upload',schedule:'Automatic scheduled public release'}[creator.mode];
+        card.append(create('strong', creator.name), create('p', mode),
+            link('Live source', creator.url));
+        if (creator.campaign) card.append(' · ', link('Campaign rules', creator.campaign));
+        if (creator.disclosure) card.append(create('p', 'Verify paid promotion and campaign requirements in Studio before publishing.'));
+        if (creator.hashtags) card.append(create('p', creator.hashtags));
+        const folder = create('code', creator.inbox);
+        card.append(create('p', 'Recorded video inbox'), folder);
+        const actions = create('div');
+        actions.className = 'row';
+        const edit = create('button', 'Edit');
+        edit.setAttribute('aria-label', 'Edit ' + creator.name);
+        edit.onclick = () => openCreatorEditor(creator);
+        actions.append(edit);
+        card.append(actions);
+        if (creator.mode !== 'review') {
+            const pause = create('button', 'Pause uploads');
+            pause.onclick = async () => {
+                pause.disabled = true;
+                try {
+                    await post('/creator-queue/' + creator.id + '/pause');
+                    el('creator-message').textContent = 'Paused new uploads. Existing YouTube schedules can be changed in Studio.';
+                    await refresh();
+                } catch (err) {
+                    el('creator-message').textContent = err.message;
+                    pause.disabled = false;
+                }
+            };
+            actions.append(pause);
+        }
+        roster.append(card);
+    }
+    if (!roster.childElementCount) roster.append(create('p', 'No creators added yet.'));
+    el('drop').textContent = s.drop;
+    el('account').textContent = s.channel ? 'Connected to ' + s.channel.title :
+        s.configured ? 'Sign in and choose the destination channel.' : 'YouTube is not connected.';
+    el('connect').textContent = s.channel ? 'Reconnect YouTube' : 'Connect YouTube';
+    el('setup').hidden = s.configured;
+    const available = new Set(removableClips().map(c => c.id));
+    for (const id of picked) if (!available.has(id)) picked.delete(id);
+    const sources = el('sources');
+    sources.replaceChildren();
+    if (s.note) sources.append(create('p', s.note));
+    if (!s.sources.length) sources.append(create('p', 'No videos dropped yet.'));
+    for (const source of s.sources) {
+        const item = create('div'); item.className = 'item';
+        item.append(create('strong', source.filename), create('p', source.detail || source.status));
+        if (source.status === 'error') {
+            const retry = create('button', 'Retry clipping');
+            retry.onclick = async () => {
+                retry.disabled = true;
+                try { await post('/retry-source/' + source.id); await refresh(); }
+                catch (err) { error(err); retry.disabled = false; }
+            };
+            item.append(retry);
+        }
+        sources.append(item);
+    }
+    const clips = el('clips');
+    clips.replaceChildren();
+    if (!s.clips.length) clips.append(create('p', 'Finished clips will appear here for review.'));
+    for (const clip of s.clips) {
+        const item = create('div'); item.className = 'item';
+        const title = create('label');
+        if (removableStatuses.has(clip.status)) {
+            const select = create('input'); select.type = 'checkbox'; select.checked = picked.has(clip.id);
+            select.dataset.clip = clip.id;
+            select.setAttribute('aria-label', 'Select ' + clip.title);
+            select.onchange = () => {
+                if (select.checked) picked.add(clip.id); else picked.delete(clip.id);
+                buttons();
+            };
+            title.append(select);
+        }
+        title.append(create('strong', clip.title));
+        item.append(title);
+        if (clip.hook) item.append(create('p', clip.hook));
+        const detail = clip.detail && clip.detail !== statuses[clip.status] ? ' · ' + clip.detail : '';
+        item.append(create('p', publicationLabel(clip) + detail));
+        item.append(link('Preview clip', '/preview/' + clip.id));
+        if (clip.youtube_id) {
+            item.append(' · ', link('Open in YouTube Studio', 'https://studio.youtube.com/video/' + encodeURIComponent(clip.youtube_id) + '/edit'));
+        }
+        if (removableStatuses.has(clip.status)) {
+            item.append(' · ', queueAction('Remove from queue', 'remove', clip));
+        }
+        clips.append(item);
+    }
+    const removed = el('removed-clips');
+    const removedClips = s.removed_clips || [];
+    const removedIds = new Set(removedClips.map(clip => clip.id));
+    for (const id of pickedRemoved) if (!removedIds.has(id)) pickedRemoved.delete(id);
+    el('removed-clips-panel').hidden = removedClips.length === 0;
+    el('removed-clips-summary').textContent = 'Recently removed (' + removedClips.length + ')';
+    removed.replaceChildren();
+    for (const clip of removedClips) {
+        const item = create('div');
+        item.className = 'item row';
+        const title = create('label');
+        const select = create('input');
+        select.type = 'checkbox';
+        select.checked = pickedRemoved.has(clip.id);
+        select.setAttribute('aria-label', 'Select removed clip: ' + clip.title);
+        select.onchange = () => {
+            if (select.checked) pickedRemoved.add(clip.id); else pickedRemoved.delete(clip.id);
+            restoreButtons();
+        };
+        title.append(select, create('strong', clip.title));
+        item.append(title, queueAction('Restore', 'restore', clip));
+        removed.append(item);
+    }
+    buttons();
+}
+async function refresh() {
+    const response = await fetch('/state');
+    if (!response.ok) throw Error('The local queue is unavailable.');
+    const state = await response.json();
+    const serialized = JSON.stringify(state);
+    if (serialized !== snapshot) { snapshot = serialized; show(state); }
+}
+el('connect').onclick = async () => {
+    busy = true; buttons();
+    try { location.assign((await post('/connect')).url); }
+    catch (err) { error(err); busy = false; buttons(); }
+};
+function openCreatorEditor(creator) {
+    editingCreator = creator;
+    el('creator-form').reset();
+    el('creator-editor-title').textContent = creator ? 'Edit ' + creator.name : 'Add a creator';
+    el('creator-save').textContent = creator ? 'Save changes' : 'Add creator';
+    el('creator-cancel').hidden = !creator;
+    el('creator-message').textContent = '';
+    if (creator) {
+        el('creator-name').value = creator.name;
+        el('creator-url').value = creator.url;
+        el('creator-campaign').value = creator.campaign;
+        el('creator-tags').value = creator.hashtags;
+        el('creator-disclosure').checked = Boolean(creator.disclosure);
+        el('creator-mode').value = creator.mode;
+        el('creator-editor').open = true;
+        el('creator-name').focus();
+    }
+}
+
+el('creator-cancel').onclick = () => {
+    openCreatorEditor(null);
+    el('creator-editor').open = false;
+    el('creator-editor-title').focus();
+};
+el('creator-form').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const creator = editingCreator;
+    const mode = el('creator-mode').value;
+    const certified = el('creator-certified').checked;
+    const disclosure = el('creator-disclosure').checked;
+    const message = el('creator-message');
+    if (mode !== 'review' && (!current?.channel || !certified)) {
+        message.textContent = 'Connect YouTube and confirm your rights before enabling uploads.';
+        return;
+    }
+    if (mode === 'schedule' && disclosure) {
+        message.textContent = 'Choose Private for clips that need a YouTube Studio disclosure.';
+        return;
+    }
+    const name = el('creator-name').value;
+    if (mode !== 'review' && !confirm('Enable ' + (mode === 'schedule' ? 'automatic scheduled public release' : 'automatic private uploads') +
+        ' for ' + name + ' on ' + current.channel.title + '?')) return;
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+        const path = creator ? '/creator-queue/' + creator.id + '/edit' : '/creator-queue/add';
+        await post(path, {name, url:el('creator-url').value, campaign:el('creator-campaign').value,
+            hashtags:el('creator-tags').value, mode, certified, disclosure, consent:mode,
+            channel:current?.channel?.id, version:creator?.updated});
+        openCreatorEditor(null);
+        el('creator-editor').open = false;
+        message.textContent = creator ? 'Saved changes for ' + name + '.' : name + ' added to the creator queue.';
+        await refresh();
+    } catch (err) {
+        message.textContent = err.message;
+    } finally {
+        submit.disabled = false;
+    }
+};
+el('select-all').onchange = event => {
+    const checked = event.currentTarget.checked;
+    picked.clear();
+    if (checked) for (const clip of removableClips()) picked.add(clip.id);
+    for (const checkbox of el('clips').querySelectorAll('input[data-clip]')) {
+        checkbox.checked = picked.has(checkbox.dataset.clip);
+    }
+    buttons();
+};
+el('restore-all').onchange = event => {
+    const checked = event.currentTarget.checked;
+    pickedRemoved.clear();
+    if (checked) for (const clip of current.removed_clips) pickedRemoved.add(clip.id);
+    for (const checkbox of el('removed-clips').querySelectorAll('input[type="checkbox"]')) {
+        checkbox.checked = checked;
+    }
+    restoreButtons();
+};
+el('restore-selected').onclick = async () => {
+    const ids = Array.from(pickedRemoved);
+    if (!ids.length || busy) return;
+    busy = true; buttons();
+    try {
+        const result = await post('/review/restore-selected', {clips:ids});
+        for (const id of ids) pickedRemoved.delete(id);
+        el('message').textContent = result.restored + ' clip(s) restored to the queue.';
+        await refresh();
+    } catch (err) {
+        error(err);
+        await refresh().catch(() => {});
+    } finally {
+        busy = false; buttons();
+    }
+};
+el('remove-selected').onclick = async () => {
+    const clips = removableClips().filter(clip => picked.has(clip.id));
+    if (!clips.length || busy) return;
+    const scheduled = clips.some(clip => clip.status === 'scheduled');
+    const note = scheduled ? ' Existing YouTube videos and publication schedules will stay in place.' :
+        ' Existing YouTube videos will stay in Studio.';
+    if (!confirm('Remove ' + clips.length + ' selected clip(s) from the local queue?' + note)) return;
+    busy = true; buttons();
+    try {
+        const result = await post('/review/remove-selected', {clips:clips.map(clip => clip.id)});
+        for (const clip of clips) picked.delete(clip.id);
+        el('message').textContent = result.removed + ' clip(s) removed. You can restore them under Recently removed.';
+        await refresh();
+    } catch (err) {
+        error(err);
+        await refresh().catch(() => {});
+    } finally {
+        busy = false; buttons();
+    }
+};
+el('publication').onchange = buttons;
+el('publish-at').oninput = buttons;
+el('upload').onclick = async () => {
+    const channel = current.channel;
+    const ids = Array.from(picked);
+    if (!channel || !ids.length || el('upload').disabled) return;
+    const scheduled = Boolean(current?.schedule_min_minutes) && el('publication').value === 'schedule';
+    const details = {clips:ids, channel:channel.id};
+    let confirmation = 'Upload ' + ids.length + ' selected clip(s) to ' + channel.title + ' as private?';
+    if (scheduled) {
+        const moment = new Date(el('publish-at').value);
+        if (!Number.isFinite(moment.getTime()) || moment.getTime() - Date.now() < current.schedule_min_minutes * 60 * 1000) {
+            error(Error('Choose a publication time at least ' + current.schedule_min_minutes + ' minutes from now.'));
+            return;
+        }
+        details.publish_at = moment.toISOString();
+        const when = publicationFormat.format(moment) + ' (' + localZone + ')';
+        confirmation = 'Upload ' + ids.length + ' selected clip(s) to ' + channel.title + ' and approve them to go public on ' + when + '?';
+    }
+    if (!confirm(confirmation)) return;
+    busy = true; buttons();
+    try {
+        await post('/approve', details);
+        picked.clear();
+        el('publication').value = 'private';
+        el('publish-at').value = '';
+        el('message').textContent = scheduled ? 'Approved. The upload will appear as scheduled after YouTube confirms it.' : 'Approved for private upload.';
+        await refresh();
+    } catch (err) { error(err); }
+    finally { busy = false; buttons(); }
+};
+el('live-form').onsubmit = async event => {
+    event.preventDefault();
+    const channel = current?.channel;
+    if (!channel) return;
+    const url = el('live-url').value.trim();
+    const cap = Number(el('live-cap').value);
+    const hours = Number(el('live-hours').value);
+    const certified = el('live-certified').checked;
+    if (!certified || !confirm('Authorize up to ' + cap + ' automatic private uploads per 24 hours to ' + channel.title + ' from ' + url + ' for this session, which stops after ' + hours + ' hours?')) return;
+    liveBusy = true;
+    liveButtons();
+    try {
+        await post('/live-upload/start', {url, cap, hours, certified, channel:channel.id,
+            consent:'upload-this-live-stream-as-private'});
+        el('live-message').textContent = 'Live session authorized for private uploads.';
+        await refresh();
+    } catch (err) { el('live-message').textContent = err.message; }
+    finally { liveBusy = false; liveButtons(); }
+};
+el('live-stop').onclick = async () => {
+    liveBusy = true;
+    liveButtons();
+    try {
+        const result = await post('/live-upload/stop');
+        el('live-message').textContent = result.recorder === 'check' ?
+            'Automatic uploads stopped. Check the Live panel to stop the recorder.' : 'Automatic uploads stopped.';
+        await refresh();
+    } catch (err) { el('live-message').textContent = err.message; }
+    finally { liveBusy = false; liveButtons(); }
+};
+refresh().catch(error);
+setInterval(() => refresh().catch(error), 3000);
+</script>
+</html>

@@ -57,3 +57,19 @@ __pycache__/
 !.gitattributes
 !.github/workflows/
 !.github/workflows/*
+
+# Local YouTube workflow source. The allowlist excludes local credentials and media.
+!Start NeonClipping.ps1
+!YouTube Workflow/
+!YouTube Workflow/workflow.py
+!YouTube Workflow/creator_queue.py
+!YouTube Workflow/live_upload.py
+!YouTube Workflow/prepare_transcript.py
+!YouTube Workflow/queue.html
+!YouTube Workflow/Start YouTube Queue.ps1
+!YouTube Workflow/requirements.txt
+YouTube Workflow/Settings/
+YouTube Workflow/Drop videos here/
+YouTube Workflow/Creator videos/
+*.sqlite3*
+*.env

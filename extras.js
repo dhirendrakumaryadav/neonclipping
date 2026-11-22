@@ -35,7 +35,7 @@
     if (v.music) { o.music = v.music; o.music_volume = v.music_volume; o.music_peak = v.music_peak; o.music_riser = v.music_riser; }
     if (v.caption_anim && v.caption_anim !== 'highlight') o.caption_anim = v.caption_anim;
     for(const key of BRAND_KEYS){const value=$('brand-'+key)?.value;if(value)o[key]=['caption_size','caption_max_words'].includes(key)?Number(value):value;}
-    o.hook_duration=Number($('hook-duration')?.value||8);o.hook_background=$('hook-background')?.checked!==false;
+    o.hook_duration=Number($('hook-duration')?.value||8);o.hook_background=$('hook-background')?.checked===true;
     return o;
   }
   // every key, '' when off: used when editing saved clips so a switched-off option really turns off
@@ -63,18 +63,25 @@
     if ($('caption-anim')) $('caption-anim').value = s.caption_anim || 'highlight';
     for(const key of BRAND_KEYS){if($('brand-'+key))$('brand-'+key).value=s[key]||'';}
     if($('hook-duration'))$('hook-duration').value=s.hook_duration||8;
-    if($('hook-background'))$('hook-background').checked=s.hook_background!==false;
+    if($('hook-background'))$('hook-background').checked=s.hook_background===true;
   }
 
   // ---- uploads (logo, wallpaper, music)
+  async function storeAsset(file, kind) {
+    const form = new FormData();
+    form.append('file', file);
+    const response = await fetch('/upload-asset?kind=' + kind, {method:'POST', body:form});
+    const asset = await response.json();
+    if (!response.ok) throw Error(asset.detail || 'Upload failed');
+    return asset;
+  }
+
   async function uploadAsset(file, kind, nameEl, key) {
     nameEl.textContent = 'uploading…';
-    const fd = new FormData(); fd.append('file', file);
     try {
-      const r = await fetch('/upload-asset?kind=' + kind, { method: 'POST', body: fd });
-      const j = await r.json();
-      if (!r.ok) throw Error(j.detail || 'Upload failed');
-      assets[key] = j.id; nameEl.textContent = j.name || 'uploaded';
+      const asset = await storeAsset(file, kind);
+      assets[key] = asset.id;
+      nameEl.textContent = asset.name || 'uploaded';
     } catch (e) { assets[key] = ''; nameEl.textContent = '⚠ ' + e.message; }
   }
   const hook = (id, fn) => { const el = $(id); if (el) el.addEventListener('change', fn); };
@@ -89,7 +96,7 @@
   if($('mode')){const panel=document.createElement('details');panel.className='caption-brand';panel.innerHTML='<summary>Focus the clips on a topic or campaign</summary><p class="muted">These rules use spoken words, not objects visible only on screen. A topic guides ranking. Required and excluded phrases are hard transcript filters; fewer clips may match.</p><label>Transcript focus<textarea id="focus-brief" rows="2" maxlength="800" placeholder="Funny misunderstandings, complete stories, useful editing tips…"></textarea></label><label>Must mention at least one phrase<input id="focus-include" placeholder="brand name, product name (comma-separated)"></label><label>Exclude passages mentioning<input id="focus-exclude" placeholder="sponsor, subscribe (comma-separated)"></label>';$('mode').closest('label').parentNode.append(panel);}
   const lang = $('language');
   if($('mode')){const label=document.createElement('label');label.textContent='Moment mix';const select=document.createElement('select');select.id='moment-profile';select.innerHTML='<option value="balanced">Balanced: action + dialogue + story</option><option value="action">Action / high energy</option><option value="dialogue">Dialogue, humour & insights</option>';label.append(select);$('mode').closest('label').after(label);}
-  if($('hook')){const duration=document.createElement('label');duration.textContent='Opening heading duration (seconds)';const input=document.createElement('input');input.id='hook-duration';input.type='number';input.min='2';input.max='60';input.value='8';duration.append(input);$('hook').closest('label').after(duration);const backing=document.createElement('label');backing.className='check';backing.innerHTML='<input id="hook-background" type="checkbox" checked> Black backing behind opening heading';duration.after(backing);const improve=document.createElement('button');improve.textContent='Improve opening heading';improve.onclick=async()=>{try{const selected=collectWords();if(!selected?.length)throw Error('Generate or import this clip subtitles first.');improve.disabled=true;status('Writing a grounded heading with the local model…');const result=await request('/hooks/suggest',{text:selected.map(w=>w.text).join(' ')});$('hook').value=result.hook;status('Heading ready. Review the wording, then apply or export.');}catch(error){status(error.message);}finally{improve.disabled=false;}};backing.after(improve);}
+  if($('hook')){const duration=document.createElement('label');duration.textContent='Opening heading duration (seconds)';const input=document.createElement('input');input.id='hook-duration';input.type='number';input.min='2';input.max='60';input.value='8';duration.append(input);$('hook').closest('label').after(duration);const backing=document.createElement('label');backing.className='check';backing.innerHTML='<input id="hook-background" type="checkbox"> Black backing behind opening heading';duration.after(backing);const improve=document.createElement('button');improve.textContent='Improve opening heading';improve.onclick=async()=>{try{const selected=collectWords();if(!selected?.length)throw Error('Generate or import this clip subtitles first.');improve.disabled=true;status('Writing a grounded heading with the local model…');const result=await request('/hooks/suggest',{text:selected.map(w=>w.text).join(' ')});$('hook').value=result.hook;status('Heading ready. Review the wording, then apply or export.');}catch(error){status(error.message);}finally{improve.disabled=false;}};backing.after(improve);}
   if(lang){
     const panel=document.createElement('details');panel.className='caption-brand';
     const summary=document.createElement('summary');summary.textContent='Custom caption look & saved profiles';panel.append(summary);
@@ -188,9 +195,114 @@
   const baseOpen = window.openSavedClip;
   window.openSavedClip = async function (file) {
     await baseOpen(file);
-    try { const saved = await baseRequest('/clips/' + file + '/edit'); loadStyleFields(saved.settings); } catch (e) { /* the clip loaded; style fields keep their values */ }
+    try {
+      const saved = await baseRequest('/clips/' + file + '/edit');
+      loadStyleFields(saved.settings);
+      clearVoiceover();
+      voiceover = saved.settings.voiceover || '';
+      if (voiceover) {
+        sourceVolume.value = Math.round((saved.settings.voiceover_source_volume ?? .25) * 100);
+        sourceVolume.oninput();
+        $('voiceover-clear').disabled = false;
+        trendStatus('Saved voice-over will be included when you export this clip.');
+      }
+    } catch (e) { /* the clip loaded; style fields keep their values */ }
   };
 
+
+  // Trend edit controls write into the same editor fields used by preview and export.
+  const trendStatus = message => $('trend-status').textContent = message;
+  const structures = {
+    breakdown: ['Show the moment you will explain.', 'Explain one detail viewers might miss.', 'Show the moment again or demonstrate the takeaway.'],
+    experiment: ['Show the variation you are trying.', 'Show the attempt and what changed.', 'Reveal the result and your takeaway.'],
+    comparison: ['Name the two approaches you are comparing.', 'Show each approach under comparable conditions.', 'Show which result worked for you and why.'],
+  };
+  function showTrendStructure() {
+    $('trend-beats').replaceChildren(...structures[$('trend-format').value].map(text => {
+      const beat = document.createElement('li');
+      beat.textContent = text;
+      return beat;
+    }));
+  }
+  $('trend-format').onchange = showTrendStructure;
+  showTrendStructure();
+  $('apply-trend-opening').onclick = () => {
+    const opening = $('trend-opening').value.trim();
+    if (!opening) { trendStatus('Write your opening line first.'); return; }
+    $('hook').value = opening;
+    $('hook-duration').value = 3;
+    $('hook-background').checked = false;
+    trendStatus('Opening applied for 3 seconds. Preview it under Frame your moment.');
+  };
+  $('apply-trend-focus').onclick = () => {
+    const angle = $('trend-angle').value.trim();
+    if (!angle) { trendStatus('Describe what you want to add or explain.'); return; }
+    const topic = $('trend-topic').value.trim();
+    const brief = $('focus-brief');
+    brief.value = topic ? topic + ': ' + angle : angle;
+    brief.closest('details').open = true;
+    trendStatus('Angle added as transcript focus for Make clips.');
+  };
+  for (const [button, mode] of [['trend-fit','blur'], ['trend-fill','fill']]) {
+    $(button).onclick = () => {
+      const layout = document.querySelector('#layouts [data-layout="' + mode + '"]');
+      if (!layout) { trendStatus('Layouts are still loading.'); return; }
+      $('aspect').value = 'vertical';
+      $('aspect').dispatchEvent(new Event('change'));
+      layout.click();
+      trendStatus(mode === 'blur' ? 'Full frame with blurred fill selected.' : 'Vertical centre crop selected.');
+    };
+  }
+
+  let voiceover = '', voiceoverUrl = '', voiceoverSerial = 0, voiceoverPending = false;
+  const audioPreview = $('voiceover-preview');
+  const voiceoverInput = $('voiceover-file');
+  const sourceVolume = $('voiceover-source-volume');
+  const clearVoiceover = () => {
+    voiceoverSerial++;
+    voiceoverPending = false;
+    voiceover = '';
+    if (voiceoverUrl) URL.revokeObjectURL(voiceoverUrl);
+    voiceoverUrl = '';
+    audioPreview.pause();
+    audioPreview.removeAttribute('src');
+    audioPreview.load();
+    audioPreview.hidden = true;
+    voiceoverInput.value = '';
+    $('voiceover-clear').disabled = true;
+  };
+  window.clearTrendVoiceover = clearVoiceover;
+  window.trendVoiceoverSettings = () => {
+    if (voiceoverPending) throw Error('Wait for the voice-over to finish loading.');
+    return voiceover ? {voiceover, voiceover_source_volume:Number(sourceVolume.value) / 100} : {};
+  };
+  $('voiceover-clear').onclick = () => { clearVoiceover(); trendStatus('Voice-over removed.'); };
+  sourceVolume.oninput = () => $('voiceover-level').textContent = sourceVolume.value + '%';
+  voiceoverInput.onchange = async () => {
+    const file = voiceoverInput.files[0];
+    if (!file) return;
+    clearVoiceover();
+    const serial = voiceoverSerial;
+    voiceoverPending = true;
+    $('voiceover-clear').disabled = false;
+    trendStatus('Loading ' + file.name + '…');
+    try {
+      const asset = await storeAsset(file, 'audio');
+      if (serial !== voiceoverSerial) return;
+      voiceover = asset.id;
+      voiceoverUrl = URL.createObjectURL(file);
+      audioPreview.src = voiceoverUrl;
+      audioPreview.hidden = false;
+      trendStatus('Voice-over ready: ' + file.name);
+    } catch (error) {
+      if (serial === voiceoverSerial) {
+        clearVoiceover();
+        trendStatus(error.message);
+      }
+    } finally {
+      if (serial === voiceoverSerial) voiceoverPending = false;
+    }
+  };
 
   // ---- live clipping: clip length, hook source, captions switch, chat-hype meter, phone access box
   const liveBox = $('live-box');

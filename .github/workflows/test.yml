@@ -58,7 +58,8 @@ jobs:
       - name: Run the real installer against this exact commit
         run: |
           export NEONCLIPPING_DIR="$RUNNER_TEMP/nc"
-          export NEONCLIPPING_ZIP="https://github.com/${{ github.repository }}/archive/${{ github.sha }}.zip"
+          git archive --format=zip --prefix=neonclipping/ HEAD > "$RUNNER_TEMP/neonclipping.zip"
+          export NEONCLIPPING_ZIP="file://$RUNNER_TEMP/neonclipping.zip"
           export NEONCLIPPING_NO_START=1
           bash install.sh
       - name: Start it and wait for the health check

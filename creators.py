@@ -31,6 +31,11 @@ def parse_creator(text):
     t = (text or '').strip()
     if not t:
         raise ValueError('Type a Twitch name or paste a Twitch / YouTube channel link.')
+    video = re.fullmatch(r"https://(?:www\.)?youtube\.com/(?:watch\?v=|live/)([A-Za-z0-9_-]{11})|https://youtu\.be/([A-Za-z0-9_-]{11})", t)
+    if video:
+        ref = video.group(1) or video.group(2)
+        return {'platform': 'youtube', 'ref': ref, 'exact_video': True,
+                'url': 'https://www.youtube.com/watch?v=' + ref, 'name': ref}
     if 'youtu' in t:
         m = re.search(r'youtube\.com/(@[A-Za-z0-9_.\-]{2,60}|channel/UC[A-Za-z0-9_-]{20,24}|c/[A-Za-z0-9_.\-]{2,60}|user/[A-Za-z0-9_.\-]{2,60})', t)
         if not m:
@@ -59,7 +64,8 @@ def live_target(creator):
         import ytdl
         with ytdl.YDL({'quiet': True, 'no_warnings': True, 'skip_download': True, 'noplaylist': True,
                                'socket_timeout': 20}) as y:
-            info = y.extract_info(creator['url'] + '/live', download=False)
+            lookup_url = creator["url"] if creator.get("exact_video") else creator["url"] + "/live"
+            info = y.extract_info(lookup_url, download=False)
     except Exception:
         return None
     if info and info.get('is_live') and re.fullmatch(r'[A-Za-z0-9_-]{11}', str(info.get('id', ''))):
@@ -145,8 +151,15 @@ def attach(app, data, live, start_live):
     def check(creator, start=True):
         """Check one creator; start live clipping if they are live and auto is on. Returns True if live."""
         remember_stop_reasons()
-        rt = runtime.setdefault(creator['id'], {})
         target = live_target(creator)
+        with lock:
+            current = next((row for row in load() if row["id"] == creator["id"]), None)
+            if current is None or current["url"] != creator["url"]:
+                return False
+            return apply_check(current, target, start)
+
+    def apply_check(creator, target, start):
+        rt = runtime.setdefault(creator["id"], {})
         rt['checked'] = time.time()
         rt['live'] = bool(target)
         if target:
@@ -155,6 +168,7 @@ def attach(app, data, live, start_live):
                 and time.time() >= rt.get('wait_until', 0) and not anything_running():
             try:
                 rt['session'] = start_live(target, creator.get('opts') or {}, creator['id'])
+                live[rt['session']].creator_url = creator["url"]
             except Exception as e:      # e.g. another session started a moment ago
                 rt['error'] = str(e)[:160]
                 rt['wait_until'] = time.time() + 60
@@ -183,6 +197,20 @@ def attach(app, data, live, start_live):
             remember_stop_reasons()
             return {'creators': view(load()), 'busy': anything_running(), 'every': CHECK_EVERY}
 
+    @app.get('/creator-live-sessions')
+    def creator_live_sessions():
+        sessions = []
+        for session in live.copy().values():
+            if not session.creator:
+                continue
+            with session.lock:
+                state = session.state
+                sessions.append({"id": session.id, "creator": session.creator, "url": session.url,
+                                 "creator_url": getattr(session, "creator_url", None),
+                                 "status": state["status"], "pending": state["pending"],
+                                 "clips": list(state["clips"])})
+        return {"sessions": sessions}
+
     @app.post('/creators')
     def creators_add(b: dict):
         try:
@@ -195,10 +223,15 @@ def attach(app, data, live, start_live):
                 raise HTTPException(400, c['name'] + ' is already in your list.')
             if len(rows) >= 30:
                 raise HTTPException(400, 'The list holds up to 30 creators. Remove one first.')
-            c.update(id=uuid.uuid4().hex[:12], auto=True, added=time.time(), opts=opts_from(b))
+            name = str(b.get("name") or "").strip()[:80]
+            if name:
+                c["name"] = name
+            c.update(id=uuid.uuid4().hex[:12], auto=b.get("auto", True) is not False,
+                     added=time.time(), opts=opts_from(b))
             rows.append(c)
             save(rows)
-        threading.Thread(target=lambda: check(c), daemon=True).start()
+        if c["auto"]:
+            threading.Thread(target=lambda: check(c), daemon=True).start()
         return {'id': c['id']}
 
     def find(rows, cid):
@@ -206,6 +239,36 @@ def attach(app, data, live, start_live):
             if r['id'] == cid:
                 return r
         raise HTTPException(404, 'Creator not found.')
+
+    @app.post('/creators/{cid}/edit')
+    def creators_edit(cid: str, body: dict):
+        try:
+            source = parse_creator(str(body.get("url") or ""))
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        name = str(body.get("name") or "").strip()[:80]
+        with lock:
+            rows = load()
+            creator = find(rows, cid)
+            changed_url = creator["url"] != source["url"]
+            if changed_url:
+                if any(session.creator == cid and (
+                    session.state["status"] in ("starting", "recording") or session.state["pending"]
+                ) for session in live.copy().values()):
+                    raise HTTPException(409, "Wait for this creator's recording and exports to finish before changing the source.")
+                if any(other["id"] != cid and other["platform"] == source["platform"] and
+                       other["ref"].casefold() == source["ref"].casefold() for other in rows):
+                    raise HTTPException(409, "This source is already assigned to another creator.")
+                creator.pop("exact_video", None)
+                creator.update(source)
+            if name:
+                creator["name"] = name
+            save(rows)
+            if changed_url:
+                runtime.pop(cid, None)
+        if changed_url and creator["auto"]:
+            threading.Thread(target=lambda: check(creator), daemon=True).start()
+        return {"id": cid, "url": creator["url"]}
 
     @app.post('/creators/{cid}/auto')
     def creators_auto(cid: str, b: dict):

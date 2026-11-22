@@ -7,13 +7,14 @@ const status=t=>$('status').textContent=t;
 async function request(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw Error(data.detail||'Request failed');return data;}
 function signature(){return [id,Number($('start').value),Number($('end').value),$('language').value].join(':');}
 function clearWords(){words=null;wordRange='';$('words').replaceChildren();}
-function setRange(start,end){$('start').value=start;$('end').value=end;clearWords();}
-function setSource(j,seek=0){editingClip=null;$('saved-edit').hidden=true;id=j.id;sourceW=j.w;sourceH=j.h;sourceDuration=j.duration;still=null;v.onloadeddata=()=>{if(seek>0&&seek<v.duration)v.currentTime=seek;};v.src='/media/'+id;c.width=j.w;c.height=j.h;$('empty-source').hidden=true;$('source-mode').textContent='SOURCE READY';}
+function setRange(start,end){$('start').value=start;$('end').value=end;clearWords();updateTrimTools();}
+function setSource(j,seek=0){if(id&&id!==j.id)window.clearTrendVoiceover?.();editingClip=null;$('saved-edit').hidden=true;id=j.id;sourceW=j.w;sourceH=j.h;sourceDuration=j.duration;still=null;v.onloadeddata=()=>{if(seek>0&&seek<v.duration)v.currentTime=seek;};v.src='/media/'+id;c.width=j.w;c.height=j.h;$('empty-source').hidden=true;$('source-mode').textContent='SOURCE READY';}
 async function requireSource(){if(pendingImport&&!id){status('Source is downloading. Your layout is saved; this step will continue when ready.');await pendingImport;}if(!id)throw Error('Add a video link or upload a file first.');}
 function showFrame(frame,meta,button){const image=new Image();image.onload=()=>{still=image;sourceW=image.naturalWidth;sourceH=image.naturalHeight;c.width=sourceW;c.height=sourceH;sourceDuration=meta.duration;selectedTime=frame.time;$('empty-source').hidden=true;$('source-mode').textContent=frame.kind.includes('storyboard')?'EARLY FRAME · LOW RES':'PREVIEW FRAME';v.pause();document.querySelectorAll('.frame-btn').forEach(b=>b.classList.remove('active'));button.classList.add('active');};image.src=frame.url;}
 function addFrames(frames,meta){const current=$('frames').children.length;frames.slice(current).forEach((frame,index)=>{const button=document.createElement('button');button.className='frame-btn';const image=document.createElement('img');image.src=frame.url;image.alt='Source frame at '+frame.time+' seconds';const label=document.createElement('small');label.textContent=frame.time+'s';button.append(image,label);button.onclick=()=>showFrame(frame,meta,button);$('frames').append(button);if(current===0&&index===0&&!id){showFrame(frame,meta,button);if(Number($('end').value)>meta.duration)$('end').value=meta.duration;}});}
 $('link').onclick=async()=>{
  const url=$('url').value.trim();if(!url){status('Paste a video link first.');return;}
+ window.clearTrendVoiceover?.();
  const token=++importToken;id=null;still=null;clearWords();$('frames').replaceChildren();$('link').disabled=true;$('progress-wrap').hidden=false;$('progress').style.width='2%';$('link-status').textContent='Getting early source frames…';
  const operation=(async()=>{const {job}=await request('/link',{url});let completed=false;
   for(;;){const s=await request('/status/'+job);if(token!==importToken)return;if(s.preview_frames)addFrames(s.preview_frames,s.preview_meta);
@@ -27,7 +28,7 @@ $('link').onclick=async()=>{
  try{await operation;}catch(e){$('link-status').textContent=e.message;status(e.message);}finally{if(token===importToken){pendingImport=null;$('link').disabled=false;}}
  if(token===importToken&&id&&$('auto-analyze').checked&&!$('analyze').disabled)await $('analyze').onclick();
 };
-$('file').onchange=async()=>{try{if(!$('file').files[0])return;++importToken;pendingImport=null;id=null;still=null;$('link').disabled=false;$('frames').replaceChildren();status('Uploading source…');const form=new FormData();form.append('file',$('file').files[0]);const response=await fetch('/upload',{method:'POST',body:form});const j=await response.json();if(!response.ok)throw Error(j.detail);$('url').value='';setSource(j);setRange(0,Math.min(30,j.duration));$('link-status').textContent='File ready';status('Draw the facecam and gameplay areas.');}catch(e){status(e.message);}};
+$('file').onchange=async()=>{try{if(!$('file').files[0])return;window.clearTrendVoiceover?.();++importToken;pendingImport=null;id=null;still=null;$('link').disabled=false;$('frames').replaceChildren();status('Uploading source…');const form=new FormData();form.append('file',$('file').files[0]);const response=await fetch('/upload',{method:'POST',body:form});const j=await response.json();if(!response.ok)throw Error(j.detail);$('url').value='';setSource(j);setRange(0,Math.min(30,j.duration));$('link-status').textContent='File ready';status('Draw the facecam and gameplay areas.');}catch(e){status(e.message);}};
 function showHighlights(jobs){highlights=jobs.flatMap(job=>(job.clips||[]).map(clip=>({...clip,job:job.job||job.id,video:job.title})));highlights=highlights.filter(h=>Number.isFinite(h.start)&&Number.isFinite(h.end));const select=$('recent');select.replaceChildren();if(!highlights.length){const option=document.createElement('option');option.textContent='No highlights yet — add a video and Find highlights';select.append(option);}highlights.forEach((h,index)=>{const option=document.createElement('option');option.value=index;option.textContent=h.start.toFixed(1)+'–'+h.end.toFixed(1)+'s · '+h.title+(h.score!==undefined?' · activity '+h.score:'');select.append(option);});}
 async function openHighlight(){const h=highlights[Number($('recent').value)];if(!h)return;const j=await request('/highlight-source',{job:h.job});setSource(j,h.start);setRange(h.start,h.end);status('Moment loaded. Review the source and selected areas.');}
 $('import').onclick=()=>openHighlight().catch(e=>status(e.message));
@@ -38,11 +39,48 @@ c.onpointerdown=e=>{if(!still&&v.readyState<2)return;drag=point(e);c.setPointerC
 $('save').onclick=()=>{localStorage.setItem('ajay-crop',JSON.stringify({rect,top:$('top').value,layout}));status('Layout saved in this browser.');};$('load').onclick=()=>{try{const j=JSON.parse(localStorage.getItem('ajay-crop')||'null');if(j){rect=j.rect;rectEdited=true;$('top').value=j.top;setLayout(j.layout||'stack');status('Saved layout loaded.');}else status('No saved layout yet.');}catch(e){status('Saved layout could not be read.');}};
 function setLayout(value){layout=value;if($('edit-top'))$('edit-top').value=$('top').value;document.querySelectorAll('[data-layout]').forEach(b=>b.classList.toggle('active',b.dataset.layout===layout));$('height-control').hidden=['blur','fill','game'].includes(layout);}
 document.querySelectorAll('[data-layout]').forEach(b=>b.onclick=()=>{layoutClicked=true;setLayout(b.dataset.layout);});document.querySelectorAll('[data-style]').forEach(b=>b.onclick=()=>{style=b.dataset.style;document.querySelectorAll('[data-style]').forEach(x=>x.classList.toggle('active',x===b));});
-v.onplay=()=>still=null;v.ontimeupdate=()=>{const end=Number($('end').value);if(end>Number($('start').value)&&v.currentTime>end&&end<v.duration)v.pause();};
+v.onplay=()=>still=null;
+v.ontimeupdate=()=>{
+ const end=Number($('end').value);
+ if(!v.paused&&end>Number($('start').value)&&v.currentTime>=end&&end<v.duration){
+  v.pause();
+  v.currentTime=end;
+ }
+};
+
+function updateTrimTools(){
+ const ready=Boolean(id)&&v.readyState>=1;
+ const start=Number($('start').value),end=Number($('end').value);
+ const valid=start>=0&&end>start&&end<=v.duration+.01;
+ for(const key of ['trim-start','trim-end'])$(key).disabled=!ready;
+ $('play-trim').disabled=!ready||!valid;
+ $('trim-status').textContent=ready&&valid?'Selected duration: '+(end-start).toFixed(2)+' s':'';
+}
+v.addEventListener('emptied',updateTrimTools);
+v.addEventListener('loadedmetadata',updateTrimTools);
+for(const key of ['start','end'])$(key).addEventListener('input',updateTrimTools);
+for(const key of ['start','end']){
+ $('trim-'+key).onclick=()=>{
+  const now=Math.min(v.duration,Math.round(v.currentTime*100)/100);
+  const start=key==='start'?now:Number($('start').value);
+  const end=key==='end'?now:Number($('end').value);
+  if(end<=start){
+   $('trim-status').textContent='Choose an end point after the start.';
+   return;
+  }
+  setRange(start,end);
+ };
+}
+$('play-trim').onclick=async()=>{
+ if($('play-trim').disabled)return;
+ still=null;
+ v.currentTime=Number($('start').value);
+ try{await v.play();}catch(error){$('trim-status').textContent=error.message;}
+};
 ['start','end','language'].forEach(key=>$(key).addEventListener('change',()=>{clearWords();if(key==='start'&&id)v.currentTime=Math.max(0,Math.min(v.duration||Infinity,Number($('start').value)));}));
 function cover(source,r,x,y,w,h){const sw=r.w*sourceW,sh=r.h*sourceH,ratio=Math.max(w/sw,h/sh),cw=w/ratio,ch=h/ratio;pc.drawImage(source,r.x*sourceW+(sw-cw)/2,r.y*sourceH+(sh-ch)/2,cw,ch,x,y,w,h);}
 function captionPreview(){if(!$('captions').checked)return;let line='YOUR NEXT BIG MOMENT';if(words&&wordRange===signature()&&words.length){const time=Math.max(0,v.currentTime-Number($('start').value));let index=words.findIndex(w=>time>=w.start&&time<=w.end);if(index<0)index=0;line=words.slice(Math.floor(index/3)*3,Math.floor(index/3)*3+3).map(w=>w.text).join(' ');}const spec=layoutSpecs[layout];if(!spec)return;const scale=pc.canvas.width/spec.width,fs=(style==='clean'?58:72)*Math.min(spec.width/1080,spec.height/1920)*scale;pc.save();pc.textAlign='center';pc.textBaseline='middle';pc.font='900 '+fs+'px Arial';const max=pc.canvas.width*.9;while(pc.measureText(line).width>max){const size=parseFloat(pc.font.match(/(\d+(?:\.\d+)?)px/)[1]);pc.font='900 '+Math.max(8,size-1)+'px Arial';if(size<=8)break;}const position=Number($('caption-y').value)===1450?spec.caption_y:Number($('caption-y').value)/1920*spec.height;pc.lineWidth=3;pc.strokeStyle='#160b22';pc.shadowBlur=style==='gta'?8:0;pc.shadowColor='#ff4ba5';pc.strokeText(line,pc.canvas.width/2,position*scale);pc.fillStyle=style==='gta'?'#58e8f7':style==='bold'?'#d4fb58':'white';pc.fillText(line,pc.canvas.width/2,position*scale);pc.restore();}
-function hookPreview(){const text=$('hook').value.trim();if(!text)return;const spec=layoutSpecs[layout];if(!spec)return;const duration=Number($('hook-duration')?.value||8);if(!still&&v.currentTime-Number($('start').value)>duration)return;const factor=pc.canvas.width/spec.width,scale=Math.min(spec.width/1080,spec.height/1920);let raw=text.slice(0,60).toUpperCase(),lines=[],line='';const width=Math.max(12,Math.floor(spec.width/(82*scale*.6)));for(const word of raw.split(/\s+/)){if(line&&(line+' '+word).length>width){lines.push(line);line=word;}else line+=(line?' ':'')+word;}if(line)lines.push(line);lines=lines.slice(0,3);const size=Math.round((lines.length===1?78:lines.length===2?72:66)*scale)*factor,pad=Math.max(8,Math.round(26*scale))*factor,lh=Math.round(size*1.22);pc.save();pc.font='900 '+size+'px Arial';pc.textAlign='center';pc.textBaseline='top';const boxW=Math.min(pc.canvas.width*.94,Math.max(...lines.map(t=>pc.measureText(t).width))+pad*2),boxH=lh*lines.length+pad*2,y=Math.max(pad,Math.min(spec.hook_y*factor,pc.canvas.height-boxH-pad));if($('hook-background')?.checked!==false){pc.fillStyle='rgba(0,0,0,.88)';pc.fillRect((pc.canvas.width-boxW)/2,y,boxW,boxH);}pc.fillStyle='white';pc.strokeStyle='black';pc.lineWidth=2*factor;lines.forEach((value,i)=>{pc.strokeText(value,pc.canvas.width/2,y+pad+i*lh);pc.fillText(value,pc.canvas.width/2,y+pad+i*lh);});pc.restore();}
+function hookPreview(){const text=$('hook').value.trim();if(!text)return;const spec=layoutSpecs[layout];if(!spec)return;const duration=Number($('hook-duration')?.value||8);if(!still&&v.currentTime-Number($('start').value)>duration)return;const factor=pc.canvas.width/spec.width,scale=Math.min(spec.width/1080,spec.height/1920);let raw=text.slice(0,60),lines=[],line='';const width=Math.max(12,Math.floor(spec.width/(82*scale*.6)));for(const word of raw.split(/\s+/)){if(line&&(line+' '+word).length>width){lines.push(line);line=word;}else line+=(line?' ':'')+word;}if(line)lines.push(line);lines=lines.slice(0,3);const size=Math.round((lines.length===1?78:lines.length===2?72:66)*scale)*factor,pad=Math.max(8,Math.round(26*scale))*factor,lh=Math.round(size*1.22);pc.save();pc.font='900 '+size+'px Arial';pc.textAlign='center';pc.textBaseline='top';const boxW=Math.min(pc.canvas.width*.94,Math.max(...lines.map(t=>pc.measureText(t).width))+pad*2),boxH=lh*lines.length+pad*2,y=Math.max(pad,Math.min(spec.hook_y*factor,pc.canvas.height-boxH-pad));if($('hook-background')?.checked===true){pc.fillStyle='rgba(0,0,0,.88)';pc.fillRect((pc.canvas.width-boxW)/2,y,boxW,boxH);}pc.fillStyle='white';pc.strokeStyle='black';pc.lineWidth=2*factor;lines.forEach((value,i)=>{pc.strokeText(value,pc.canvas.width/2,y+pad+i*lh);pc.fillText(value,pc.canvas.width/2,y+pad+i*lh);});pc.restore();}
 function paint(){const source=still||(v.readyState>=2?v:null);if(source){if(!still){sourceW=v.videoWidth;sourceH=v.videoHeight;}if(sourceW&&sourceH){ctx.drawImage(source,0,0,c.width,c.height);['cam','game'].forEach(k=>{const r=rect[k];ctx.strokeStyle=k==='cam'?'#ff4ba5':'#58e8f7';ctx.lineWidth=Math.max(2,c.width/350);ctx.strokeRect(r.x*c.width,r.y*c.height,r.w*c.width,r.h*c.height);});pc.clearRect(0,0,540,960);drawNativeLayout(source);captionPreview();hookPreview();}}$('height-value').textContent=$('top').value+'%';requestAnimationFrame(paint);}paint();
 function collectWords(){if(words&&wordRange===signature()){const duration=Number($('end').value)-Number($('start').value);if(words.some(w=>!Number.isFinite(w.start)||!Number.isFinite(w.end)||w.start<0||w.end<=w.start||w.end>duration+.1))throw Error('Check edited subtitle start/end times before exporting.');return words;}return null;}
 function renderWords(){const editor=$('words');editor.replaceChildren();const timing=$('timing-editor')?.checked;editor.classList.toggle('timing',timing);for(const word of words||[]){const input=document.createElement('input');input.value=word.text;input.title=word.start.toFixed(2)+'–'+word.end.toFixed(2)+'s';input.oninput=()=>word.text=input.value;if(!timing){editor.append(input);continue;}const row=document.createElement('div');row.className='word-timing';row.append(input);for(const key of ['start','end']){const field=document.createElement('input');field.type='number';field.step='.01';field.min='0';field.value=Math.round(word[key]*1000)/1000;field.setAttribute('aria-label',key+' '+word.text);field.onchange=()=>{word[key]=Number(field.value);field.setAttribute('aria-invalid',String(!Number.isFinite(word[key])||word.start<0||word.end<=word.start));};row.append(field);}const merge=document.createElement('button');merge.textContent='Merge next';const index=words.indexOf(word);merge.disabled=index===words.length-1;merge.onclick=()=>{const next=words[index+1];words.splice(index,2,{start:Math.min(word.start,next.start),end:Math.max(word.end,next.end),text:word.text+' '+next.text});renderWords();};const split=document.createElement('button');split.textContent='Split words';split.onclick=()=>{const tokens=word.text.trim().split(/\s+/);if(tokens.length<2){status('Type two or more words in this row to split it.');return;}const total=tokens.reduce((n,t)=>n+t.length+1,0);let time=word.start;const parts=tokens.map(t=>{const start=time;time+=(word.end-word.start)*(t.length+1)/total;return{start,end:time,text:t};});words.splice(index,1,...parts);renderWords();status('Words split with estimated within-cue timings; review them before applying.');};row.append(merge,split);editor.append(row);}}
@@ -50,14 +88,60 @@ async function generateSubtitles(){await requireSource();status('Starting local 
 $('transcribe').onclick=async()=>{$('transcribe').disabled=true;try{await generateSubtitles();}catch(e){status(e.message);}finally{$('transcribe').disabled=false;}};
 function exportSettings(source,start,end){const b={id:source,...rect,layout,aspect:$('aspect').value,resolution:Number($('resolution').value),fps:Number($('fps').value),top:Number($('top').value)/100,start,end,captions:$('captions').checked,caption_style:style,caption_y:Number($('caption-y').value),language:$('language').value,hook:$('hook').value,title:$('clip-title').value,post_caption:$('post-caption').value};if(source===id&&start===Number($('start').value)&&end===Number($('end').value)){const edited=collectWords();if(edited!==null)b.words=edited;}return b;}
 async function runExport(body,prefix=''){const {job}=await request('/export',body);for(;;){const s=await request('/status/'+job);status(prefix+(s.message||'Rendering…'));if(s.status==='error')throw Error(s.error);if(s.status==='done')return s;await sleep(1000);}}
-function showDownload(s){$('vtt').hidden=!s.srt;if(s.srt)$('vtt').href='/text/'+s.file+'/vtt';$('download').href='/media/'+s.file;$('download').hidden=false;$('srt').hidden=!s.srt;if(s.srt)$('srt').href=s.srt;}
-$('export').onclick=async()=>{const button=$('export');button.disabled=true;$('download').hidden=true;$('srt').hidden=true;try{await requireSource();const s=await runExport(exportSettings(id,Number($('start').value),Number($('end').value)));showDownload(s);status('Ready · '+s.meta.w+' × '+s.meta.h+' · '+s.encoder+' · '+s.caption_words+' caption words');await refreshLibrary();}catch(e){status(e.message);}finally{button.disabled=false;}};
+function showDownload(s){const button=$('send-export');button.hidden=false;const feedback=$('send-export-status');feedback.hidden=true;bindQueueAction(button,feedback,s.file);$('vtt').hidden=!s.srt;if(s.srt)$('vtt').href='/text/'+s.file+'/vtt';$('download').href='/media/'+s.file;$('download').hidden=false;$('srt').hidden=!s.srt;if(s.srt)$('srt').href=s.srt;}
+$('export').onclick=async()=>{const button=$('export');button.disabled=true;$('download').hidden=true;$('srt').hidden=true;$('send-export').hidden=true;$('send-export-status').hidden=true;try{await requireSource();const settings=exportSettings(id,Number($('start').value),Number($('end').value));const s=await runExport({...settings,...window.trendVoiceoverSettings?.()});showDownload(s);status('Ready · '+s.meta.w+' × '+s.meta.h+' · '+s.encoder+' · '+s.caption_words+' caption words');await refreshLibrary();}catch(e){status(e.message);}finally{button.disabled=false;}};
 $('batch').onclick=async()=>{const button=$('batch');button.disabled=true;$('export').disabled=true;try{await requireSource();const selected=highlights[Number($('recent').value)];if(!selected)throw Error('Find highlights first.');const candidates=highlights.filter(h=>h.job===selected.job);const source=await request('/highlight-source',{job:selected.job});for(let i=0;i<candidates.length;i++){const h=candidates[i],body=exportSettings(source.id,h.start,h.end);body.title=($('clip-title').value||'Highlight')+' '+(i+1);const s=await runExport(body,'Clip '+(i+1)+' / '+candidates.length+' · ');showDownload(s);await refreshLibrary();}status(candidates.length+' clips exported. Open My clips to preview and download.');}catch(e){status(e.message);}finally{button.disabled=false;$('export').disabled=false;}};
 // Library with many clips: only fetch a video's metadata once it scrolls near the screen.
 const lazyObserver=('IntersectionObserver' in window)?new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.preload='metadata';e.target.load();lazyObserver.unobserve(e.target);}}),{rootMargin:'400px'}):null;
 function appendVisualReview(parent,review){if(!review?.frames?.length)return;const details=document.createElement('details'),title=document.createElement('summary');title.textContent='AI frame observations';details.append(title);const grid=document.createElement('div');grid.className='vision-grid';review.frames.forEach((frame,index)=>{const figure=document.createElement('figure'),image=document.createElement('img'),caption=document.createElement('figcaption');image.loading='lazy';if(/^\/vision\/frame\/[a-f0-9]{64}\/[012]$/.test(frame.image||''))image.src=frame.image;image.alt='Scene sample '+(index+1);caption.textContent=frame.description;figure.append(image,caption);grid.append(figure);});details.append(grid);parent.append(details);}
 function lazyVideo(v){if(lazyObserver){v.preload='none';lazyObserver.observe(v);}else v.preload='metadata';}
-async function refreshLibrary(){const clips=await request('/library');$('library-count').textContent=clips.length;const host=$('library');host.replaceChildren();if(!clips.length){const empty=document.createElement('div');empty.className='empty-library';empty.textContent='Your first clip belongs here. Export a moment to start your library.';host.append(empty);}for(const clip of clips){const card=document.createElement('article');card.className='clip-card';const video=document.createElement('video');video.src='/media/'+clip.id;video.controls=true;lazyVideo(video);const title=document.createElement('h3');title.textContent=clip.title;const meta=document.createElement('p');meta.textContent=(clip.meta.duration||0).toFixed(1)+' seconds · '+(clip.settings.layout||'stack')+' · '+new Date(clip.created*1000).toLocaleDateString();const links=document.createElement('div');links.className='card-links';const download=document.createElement('a');download.href='/media/'+clip.id;download.download='neonclipping-'+clip.id+'.mp4';download.textContent='↓ MP4';links.append(download);if(clip.srt){const sub=document.createElement('a');sub.href='/text/'+clip.id+'/srt';sub.textContent='↓ SRT';links.append(sub);}const edit=document.createElement('button');edit.textContent='Edit clip';edit.onclick=()=>openSavedClip(clip.id).catch(e=>status(e.message));links.append(edit);card.append(video,title,meta,links);appendVisualReview(card,clip.settings.visual_review);host.append(card);}}
+const youtubeQueue = 'http://127.0.0.1:8772';
+
+function bindQueueAction(button, feedback, clipId) {
+ button.textContent = 'Send to YouTube Queue';
+ button.disabled = false;
+ button.onclick = async () => {
+  button.disabled = true;
+  feedback.hidden = false;
+  feedback.textContent = 'Adding clip…';
+  try {
+   const response = await fetch(youtubeQueue + '/review/library/' + encodeURIComponent(clipId), {
+    method: 'POST',
+    headers: {'X-Neon-Library': '1'},
+   });
+   const result = await response.json();
+   if (!response.ok) throw Error(result.detail || 'The clip could not be added.');
+   feedback.textContent = result.added ? 'Added to Review clips. ' :
+    result.status === 'removed' ? 'Restore this clip under Recently removed in the queue. ' :
+    result.status === 'review' ? 'Already in Review clips. ' : 'Already in the YouTube Queue. ';
+   const link = document.createElement('a');
+   link.href = youtubeQueue + '/#review-clips';
+   link.target = '_blank';
+   link.rel = 'noopener noreferrer';
+   link.textContent = 'Open queue';
+   feedback.append(link);
+   button.textContent = result.status === 'removed' ? 'Removed from queue' :
+    result.status === 'review' ? 'In Review clips' : 'In YouTube Queue';
+  } catch (error) {
+   feedback.textContent = error instanceof TypeError ?
+    'YouTube Queue is unavailable. Start it and try again.' : error.message;
+   button.disabled = false;
+  }
+ };
+}
+
+function appendQueueAction(card, clipId) {
+ const button = document.createElement('button');
+ button.type = 'button';
+ button.className = 'queue-clip-button';
+ const feedback = document.createElement('p');
+ feedback.setAttribute('role', 'status');
+ feedback.hidden = true;
+ bindQueueAction(button, feedback, clipId);
+ card.append(button, feedback);
+}
+
+async function refreshLibrary(){const clips=await request('/library');$('library-count').textContent=clips.length;const host=$('library');host.replaceChildren();if(!clips.length){const empty=document.createElement('div');empty.className='empty-library';empty.textContent='Your first clip belongs here. Export a moment to start your library.';host.append(empty);}for(const clip of clips){const card=document.createElement('article');card.className='clip-card';const video=document.createElement('video');video.src='/media/'+clip.id;video.controls=true;lazyVideo(video);const title=document.createElement('h3');title.textContent=clip.title;const meta=document.createElement('p');meta.textContent=(clip.meta.duration||0).toFixed(1)+' seconds · '+(clip.settings.layout||'stack')+' · '+new Date(clip.created*1000).toLocaleDateString();const links=document.createElement('div');links.className='card-links';const download=document.createElement('a');download.href='/media/'+clip.id;download.download='neonclipping-'+clip.id+'.mp4';download.textContent='↓ MP4';links.append(download);if(clip.srt){const sub=document.createElement('a');sub.href='/text/'+clip.id+'/srt';sub.textContent='↓ SRT';links.append(sub);}const edit=document.createElement('button');edit.textContent='Edit clip';edit.onclick=()=>openSavedClip(clip.id).catch(e=>status(e.message));links.append(edit);card.append(video,title,meta,links);appendQueueAction(card,clip.id);appendVisualReview(card,clip.settings.visual_review);host.append(card);}}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-view]').forEach(x=>x.classList.toggle('active',x===b));$('editor-view').hidden=b.dataset.view!=='editor';$('library-view').hidden=b.dataset.view!=='library';if(b.dataset.view==='library')refreshLibrary().catch(e=>status(e.message));});$('refresh-library').onclick=()=>refreshLibrary().catch(e=>status(e.message));
 request('/highlights').then(showHighlights).catch(e=>status(e.message));refreshLibrary().catch(e=>status(e.message));
 

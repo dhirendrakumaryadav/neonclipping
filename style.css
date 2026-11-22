@@ -122,3 +122,13 @@ details.panel>summary{cursor:pointer;list-style:none;font-size:16px}details.pane
 .transcript-passage{padding:16px;margin:12px 0;border:1px solid var(--line);border-radius:12px}.transcript-passage .chip{margin:5px}.transcript-passage .chip.active{border-color:var(--pink)}#tr-results{max-height:600px;overflow:auto}#tr-text{width:100%;box-sizing:border-box}
 
 .vision-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.vision-grid figure{margin:10px 0;padding:8px;background:#100d18;border-radius:10px}.vision-grid img{width:100%;height:auto;display:block}.vision-grid figcaption{font-size:12px;line-height:1.45;color:var(--muted);margin-top:8px}
+
+.clip-card .queue-clip-button { width: 100%; margin: 4px 0 8px; border-color: var(--cyan); }
+.clip-card [role=status] a { color: var(--cyan); }
+
+#trend-editor .trend-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap: 12px; align-items: end; }
+#trend-editor .trend-fields input, #trend-editor .trend-fields select { width: 100%; }
+#trend-beats { padding-left: 24px; margin: 14px 0; color: var(--muted); }
+#trend-beats li { padding: 3px 0; }
+.trend-actions { margin-top: 10px; }
+#voiceover-preview { max-width: 100%; }
