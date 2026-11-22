@@ -27,6 +27,20 @@ code{color:#e3dbff;overflow-wrap:anywhere}
 .item p{font-size:.92rem;margin:.2rem 0}
 .item label{display:flex;gap:.65rem;align-items:baseline}
 #message{color:#f9ce94}
+#packaging{background:#1b1e29;color:#eee;border:1px solid #535970;border-radius:14px;padding:1.2rem;width:min(720px,calc(100vw - 2rem));max-height:calc(100vh - 2rem)}
+#packaging::backdrop{background:#0a0c12bb}
+.packaging-grid{display:grid;grid-template-columns:minmax(130px,220px) minmax(0,1fr);gap:1rem;margin-top:1rem;align-items:start}
+.packaging-fields label{display:grid;gap:.3rem;margin-bottom:.8rem}
+.packaging-fields input[type=text]{font:inherit;color:inherit;background:#151822;border:1px solid #68617c;padding:.5rem;border-radius:8px;width:100%}
+#cover-frame{display:block;width:100%;aspect-ratio:9/16;max-height:350px;object-fit:contain;background:#10131d;border-radius:8px}
+#cover-time,#retention-point{width:100%}
+#package-checks{padding-left:1.2rem;color:#efd4a5}
+#retention-chart{display:block;width:100%;height:auto;margin:.7rem 0}
+#retention-drops{padding-left:1.2rem}
+#retention-drops button{margin:.2rem 0;text-align:left}
+#retention-form label{display:grid;gap:.25rem}
+#retention-form input{max-width:100%}
+@media(max-width:560px){.packaging-grid{grid-template-columns:1fr}#cover-frame{height:220px}}
 </style>
 <h1>YouTube queue</h1>
 <p>Drop in a video, review the clips, then keep them private or schedule their release.</p>
@@ -126,7 +140,47 @@ code{color:#e3dbff;overflow-wrap:anywhere}
 <div id="removed-clips"></div>
 </details>
 </section>
+<section id="retention-analysis">
+<h2>Retention Analysis</h2>
+<p>Import the audience-retention CSV for one video from YouTube Studio → Analytics → Engagement.</p>
+<form id="retention-form" class="publish-controls">
+<label>Audience retention CSV<input id="retention-file" name="file" type="file" accept=".csv,text/csv" required></label>
+<label>Video length in seconds (optional)<input id="retention-duration" name="duration" type="number" step="0.01" min="0.01" max="86400"></label>
+<button type="submit" class="primary">Analyze retention</button>
+</form>
+<p id="retention-message" role="status"></p>
+<div id="retention-results" hidden>
+<p id="retention-summary"></p>
+<canvas id="retention-chart" width="760" height="300" role="img" aria-label="Audience retention over the video"></canvas>
+<label for="retention-point">Explore the curve</label>
+<input type="range" id="retention-point" min="0" step="1" value="0">
+<p id="retention-reading"></p>
+<h3>Largest drops</h3>
+<ol id="retention-drops"></ol>
+</div>
+</section>
 </main>
+<dialog id="packaging" aria-labelledby="packaging-heading">
+<form id="packaging-form">
+<div class="row"><h2 id="packaging-heading">Title + Thumbnail Check</h2><button id="close-packaging" type="button">Close</button></div>
+<div class="packaging-grid">
+<div>
+<img id="cover-frame" alt="Selected thumbnail frame from this Short">
+<label for="cover-time">Cover frame <output id="cover-time-label"></output></label>
+<input id="cover-time" type="range" value="0" min="0" step="any" disabled>
+</div>
+<div class="packaging-fields">
+<label>Short title<input type="text" id="package-title" maxlength="100" required></label>
+<p id="package-title-preview"></p>
+<label>Text visible on cover (optional)<input type="text" id="cover-text" maxlength="160" placeholder="Type any words shown in the frame"></label>
+<ul id="package-checks"></ul>
+<p>The frame time is saved as a reference. Set the actual Shorts thumbnail in the YouTube mobile app.</p>
+<button id="save-packaging" type="submit" class="primary" disabled>Save check</button>
+<p id="packaging-message" role="status"></p>
+</div>
+</div>
+</form>
+</dialog>
 <script>
 const token = document.querySelector('meta[name="workflow-token"]').content;
 const el = id => document.getElementById(id);
@@ -333,6 +387,12 @@ function show(s) {
         const detail = clip.detail && clip.detail !== statuses[clip.status] ? ' · ' + clip.detail : '';
         item.append(create('p', publicationLabel(clip) + detail));
         item.append(link('Preview clip', '/preview/' + clip.id));
+        if (clip.status === 'review') {
+            const check = create('button', clip.packaging_checked ? 'Edit title + thumbnail check' : 'Check title + thumbnail');
+            check.type = 'button';
+            check.onclick = () => openPackaging(clip);
+            item.append(' · ', check);
+        }
         if (clip.youtube_id) {
             item.append(' · ', link('Open in YouTube Studio', 'https://studio.youtube.com/video/' + encodeURIComponent(clip.youtube_id) + '/edit'));
         }
@@ -498,6 +558,12 @@ el('upload').onclick = async () => {
     const channel = current.channel;
     const ids = Array.from(picked);
     if (!channel || !ids.length || el('upload').disabled) return;
+    const unchecked = current.clips.find(clip => picked.has(clip.id) && !clip.packaging_checked);
+    if (unchecked) {
+        el('message').textContent = 'Complete Title + Thumbnail Check before approving the selected clips.';
+        openPackaging(unchecked);
+        return;
+    }
     const scheduled = Boolean(current?.schedule_min_minutes) && el('publication').value === 'schedule';
     const details = {clips:ids, channel:channel.id};
     let confirmation = 'Upload ' + ids.length + ' selected clip(s) to ' + channel.title + ' as private?';
@@ -556,4 +622,5 @@ el('live-stop').onclick = async () => {
 refresh().catch(error);
 setInterval(() => refresh().catch(error), 3000);
 </script>
+<script src="/review-insights.js"></script>
 </html>

@@ -1,5 +1,6 @@
 """Watch a local folder, queue NeonClipping jobs and submit explicitly approved private or scheduled uploads."""
 import hashlib
+import math
 import json
 import os
 import re
@@ -20,8 +21,9 @@ import httpx
 import keyring
 import live_upload
 import creator_queue
+import review_insights
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
@@ -84,6 +86,10 @@ def setup():
                 id TEXT PRIMARY KEY, source TEXT NOT NULL, title TEXT NOT NULL,
                 hook TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'review',
                 channel TEXT, youtube_id TEXT, detail TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS clip_packaging (
+                clip TEXT PRIMARY KEY, title TEXT NOT NULL,
+                cover_seconds REAL NOT NULL, cover_text TEXT NOT NULL DEFAULT ''
             );
             UPDATE clips SET status='check',
                 detail='Upload was interrupted. Check YouTube Studio before trying again.'
@@ -174,20 +180,22 @@ def prepare_transcript(client, source_id, key):
         request(client, "POST", "/transcripts/import", json={**payload, "words": words})
 
 
+def probe_video(video_path):
+    bin_probe = HERE.parent / "runtime" / "ffmpeg" / "bin" / "ffprobe.exe"
+    cmd = str(bin_probe) if bin_probe.is_file() else "ffprobe"
+    result = subprocess.run([cmd, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(video_path)],
+                            capture_output=True, text=True, check=True, timeout=15)
+    metadata = json.loads(result.stdout)
+    video = next(stream for stream in metadata["streams"] if stream["codec_type"] == "video")
+    return int(video["width"]), int(video["height"]), float(metadata["format"]["duration"])
+
+
 def is_finished_clip(video_path):
     try:
-        bin_probe = HERE.parent / "runtime" / "ffmpeg" / "bin" / "ffprobe.exe"
-        cmd = str(bin_probe) if bin_probe.is_file() else 'ffprobe'
-        r = subprocess.run([cmd, '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(video_path)],
-                           capture_output=True, text=True, check=True)
-        j = json.loads(r.stdout)
-        v = next(x for x in j['streams'] if x['codec_type'] == 'video')
-        w, h = int(v['width']), int(v['height'])
-        duration = float(j['format']['duration'])
-        return h > w and duration <= 120
-    except Exception:
+        width, height, duration = probe_video(video_path)
+        return height > width and duration <= 120
+    except (ValueError, KeyError, StopIteration, OSError, subprocess.SubprocessError):
         return False
-
 
 def sync_clips(client):
     with db() as connection:
@@ -615,13 +623,118 @@ def home():
     return HTMLResponse(html.replace("__WORKFLOW_TOKEN__", SECRET))
 
 
+@app.get("/review-insights.js")
+def insights_script():
+    return FileResponse(HERE / "review-insights.js", media_type="text/javascript")
+
+
+def packaging_media(file):
+    if not HEX_ID.fullmatch(file):
+        raise HTTPException(404, "Clip not found.")
+    with db() as connection:
+        if not connection.execute("SELECT 1 FROM clips WHERE id=? AND status='review'", (file,)).fetchone():
+            raise HTTPException(404, "Clip is no longer waiting for review.")
+    media = DATA / f"{file}.mp4"
+    if not media.is_file():
+        raise HTTPException(404, "The finished clip is no longer on this laptop.")
+    return media
+
+
+@app.get("/review/{file}/packaging")
+def packaging_metadata(file: str):
+    media = packaging_media(file)
+    try:
+        _, _, duration = probe_video(media)
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError()
+    except (ValueError, KeyError, StopIteration, OSError, subprocess.SubprocessError):
+        raise HTTPException(400, "The finished clip could not be opened.") from None
+    return {"duration": duration}
+
+
+@app.get("/review/{file}/cover")
+def cover_frame(file: str, at: float = 0):
+    media = packaging_media(file)
+    if not math.isfinite(at) or not 0 <= at <= 86400:
+        raise HTTPException(400, "Choose a valid frame from the clip.")
+    bundled = HERE.parent / "runtime" / "ffmpeg" / "bin" / "ffmpeg.exe"
+    ffmpeg = str(bundled) if bundled.is_file() else "ffmpeg"
+    try:
+        frame = subprocess.run([
+            ffmpeg, "-v", "error", "-nostdin", "-ss", str(at), "-i", str(media),
+            "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=360:640:force_original_aspect_ratio=decrease",
+            "-threads", "1", "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1",
+        ], capture_output=True, check=True, timeout=15).stdout
+        if not frame:
+            raise ValueError()
+    except (ValueError, OSError, subprocess.SubprocessError):
+        raise HTTPException(400, "This frame could not be previewed. Try an earlier frame.") from None
+    return Response(content=frame, media_type="image/jpeg")
+
+
+@app.post("/review/{file}/packaging")
+def save_packaging(file: str, body: dict):
+    if not HEX_ID.fullmatch(file):
+        raise HTTPException(404, "Clip not found.")
+    title = body.get("title")
+    cover_text = body.get("cover_text", "")
+    if not isinstance(title, str) or not isinstance(cover_text, str):
+        raise HTTPException(400, "Enter a valid title and cover text.")
+    title, cover_text = title.strip(), cover_text.strip()
+    if not 1 <= len(title) <= 100 or re.search(r"[\x00-\x1f\x7f<>]", title):
+        raise HTTPException(400, "Use a title of 1–100 characters without angle brackets or line breaks.")
+    if len(cover_text) > 160:
+        raise HTTPException(400, "Keep cover text at 160 characters or fewer.")
+    try:
+        seconds = float(body["cover_seconds"])
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise HTTPException(400, "Choose a valid frame from the clip.") from None
+    media = DATA / f"{file}.mp4"
+    if not media.is_file():
+        raise HTTPException(404, "The finished clip is no longer on this laptop.")
+    try:
+        _, _, duration = probe_video(media)
+    except (ValueError, KeyError, StopIteration, OSError, subprocess.SubprocessError):
+        raise HTTPException(400, "The finished clip could not be opened.") from None
+    if not 0 <= seconds < duration:
+        raise HTTPException(400, "Choose a frame within the clip.")
+    with LOCK, db() as connection:
+        changed = connection.execute("UPDATE clips SET title=? WHERE id=? AND status='review'", (title, file))
+        if not changed.rowcount:
+            raise HTTPException(409, "This clip is no longer waiting for review.")
+        connection.execute("""
+            INSERT INTO clip_packaging(clip,title,cover_seconds,cover_text) VALUES(?,?,?,?)
+            ON CONFLICT(clip) DO UPDATE SET title=excluded.title, cover_seconds=excluded.cover_seconds,
+                                         cover_text=excluded.cover_text
+        """, (file, title, seconds, cover_text))
+    return {"title": title, "cover_seconds": seconds}
+
+
+@app.post("/retention/analyze")
+def analyze_retention(file: UploadFile = File(...), duration: float | None = Form(None)):
+    limit = 1024 * 1024
+    content = file.file.read(limit + 1)
+    if len(content) > limit:
+        raise HTTPException(400, "Choose a retention CSV under 1 MB.")
+    try:
+        return review_insights.retention_summary(content, duration)
+    except UnicodeError as error:
+        raise HTTPException(400, "The CSV must use UTF-8 or UTF-16 encoding.") from error
+    except (ValueError, review_insights.csv.Error) as error:
+        raise HTTPException(400, str(error)) from error
+
+
 @app.get("/state")
 def state():
     account = saved_account()
     with db() as connection:
         sources = [dict(row) for row in connection.execute("SELECT * FROM sources ORDER BY created DESC")]
         clips = [dict(row) for row in connection.execute("""
-            SELECT v.*, p.name AS creator_name FROM clips v
+            SELECT v.*, p.name AS creator_name, k.cover_seconds, k.cover_text,
+                   k.title=v.title AS packaging_checked
+            FROM clips v LEFT JOIN clip_packaging k ON k.clip=v.id
             LEFT JOIN creator_candidates c ON c.clip=v.id LEFT JOIN creator_profiles p ON p.id=c.creator
             WHERE v.status<>'removed'
             ORDER BY v.rowid DESC
@@ -836,6 +949,12 @@ def approve(body: dict):
         with db() as connection:
             connection.execute("BEGIN IMMEDIATE")
             for key in dict.fromkeys(ids):
+                checked = connection.execute("""
+                    SELECT 1 FROM clips v JOIN clip_packaging k ON k.clip=v.id AND k.title=v.title
+                    WHERE v.id=? AND v.status='review'
+                """, (key,)).fetchone()
+                if not checked:
+                    raise HTTPException(409, "Complete Title + Thumbnail Check for each selected clip before approving.")
                 if publish_at and connection.execute("""
                     SELECT 1 FROM creator_candidates c JOIN creator_profiles p ON p.id=c.creator
                     WHERE c.clip=? AND p.disclosure=1
