@@ -19,6 +19,7 @@ import styling
 import brands
 import hooks
 import curation
+import moment_picker
 import facecam_detect
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('NEONCLIPPING_DATA_DIR',str(ROOT/'data'))).resolve();DATA.mkdir(parents=True,exist_ok=True)
@@ -27,7 +28,8 @@ state={}
 def probe(p):
  r=subprocess.run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(p)],capture_output=True,text=True,check=True)
  j=json.loads(r.stdout);v=next(x for x in j['streams'] if x['codec_type']=='video')
- return {'w':v['width'],'h':v['height'],'duration':float(j['format']['duration'])}
+ return {'w':v['width'],'h':v['height'],'duration':float(j['format']['duration']),
+         'has_audio':any(stream['codec_type']=='audio' for stream in j['streams'])}
 @app.get('/')
 def home():return HTMLResponse((ROOT/'index.html').read_text(encoding='utf-8'))
 attach(app,DATA,state,probe)
@@ -213,12 +215,17 @@ def make(b:dict):
  audio + transcript, then fetch just those video sections. Clips stream into state[job]['clips']."""
  url,src0=app.neon['new_source'](b);save=app.neon['save']
  try:
-  count=max(1,min(12,int(b.get('count',4))));raw_max=float(b.get('max_len',b.get('length',60)));raw_min=float(b.get('min_len',30))
+  count=int(b.get('count',4))
+  if isinstance(b.get('count'),bool) or not 1<=count<=12 or float(b.get('count',4))!=count:raise ValueError()
+  raw_max=float(b.get('max_len',b.get('length',60)));raw_min=float(b.get('min_len',30))
   if not (math.isfinite(raw_max) and math.isfinite(raw_min)):raise ValueError()
   max_len=max(10,min(180,raw_max));min_len=max(5,min(max_len,raw_min))
  except (TypeError,ValueError,OverflowError):raise HTTPException(400,'Choose a valid clip count and length range.')
  if raw_min>raw_max:raise HTTPException(400,'Minimum clip length is longer than the maximum. Make the minimum smaller or the maximum bigger.')
+ picker=b.get('picker','current')
+ if not isinstance(picker,str) or picker not in moment_picker.PICKERS:raise HTTPException(400,'Choose a supported moment picker.')
  moments=b.get('moments')
+ if moments is not None and picker!='current':raise HTTPException(400,'Choose Current picker to render specific timestamps.')
  if moments is not None:
   if not isinstance(moments,list) or not 1<=len(moments)<=40 or not all(isinstance(m,dict) for m in moments):raise HTTPException(400,'Moments must be a list of 1 to 40 items with start and end.')
   count=min(24,len(moments))
@@ -245,7 +252,7 @@ def make(b:dict):
     if info.get('is_live') or info.get('live_status') in ('is_live','is_upcoming'):
      raise RuntimeError('This stream is live right now. Use the Live clipping panel to clip it while it is on, or wait until it ends and use Make clips on the finished video.')
     video_lang=str(info.get('language') or '')
-    fast=float(info.get('duration') or 0)>FAST_OVER and not info.get('is_live') and mode=='fast';title=info.get('title') or ''
+    fast=float(info.get('duration') or 0)>FAST_OVER and not info.get('is_live') and mode=='fast' and picker=='current';title=info.get('title') or ''
     try:
      from captions_yt import from_info
      yt_words=from_info(info);save(job,{'transcript_source':'YouTube captions' if yt_words else 'speech model'})
@@ -336,15 +343,24 @@ def make(b:dict):
      save(job,{'stage':'Downloading source ('+quality_label(src_h)+')','progress':.02});sid,p=app.neon['download'](url,job,src_h)
     else:sid,p=src0.stem,src0
     meta=probe(p);duration=meta['duration'];save(job,{'source_id':sid,'meta':meta,'stage':'Finding moments','progress':.1})
-    found,engine=ai_found(moments,yt_words,duration) if moments else find(p,duration,count,max_len,lambda f,m:save(job,{'stage':m,'progress':.1+.5*f}),language,DATA,min_len,True,yt_words,mode=='deep',W,False,profile,focus_brief,include_phrases,exclude_phrases)
-    found=choose(found,lambda c:(p,c['start']))
+    if picker!='current':
+     if not yt_words and meta['has_audio'] and (picker=='best' or include_phrases or exclude_phrases):
+      save(job,{'stage':'Reading the full source transcript locally','progress':.1})
+      yt_words=transcribe(p,0,duration,DATA,lambda _:None,language)['words']
+     found,engine=moment_picker.find(p,duration,count,min_len,max_len,picker,yt_words,focus_brief,include_phrases,exclude_phrases,
+                                    lambda progress,stage:save(job,{'stage':stage,'progress':progress}),
+                                    include_unverified=b.get('include_unverified') is True)
+    else:
+     found,engine=ai_found(moments,yt_words,duration) if moments else find(p,duration,count,max_len,lambda f,m:save(job,{'stage':m,'progress':.1+.5*f}),language,DATA,min_len,True,yt_words,mode=='deep',W,False,profile,focus_brief,include_phrases,exclude_phrases)
+     found=choose(found,lambda c:(p,c['start']))
     if not found:
-     save(job,{'status':'done','stage':'No moments matched the transcript filters. Broaden the focus or required phrases.','progress':1,'clips':[],'elapsed_seconds':round(time.monotonic()-began,2)});return
+     message='No complete moments passed review.' if picker!='current' else 'No moments matched the transcript filters. Broaden the focus or required phrases.'
+     save(job,{'status':'done','stage':message,'progress':1,'clips':[],'elapsed_seconds':round(time.monotonic()-began,2)});return
     save(job,{'engine':engine,'stage':'Rendering clips','progress':.6,'candidates':len(found)})
    done=[];cam_use,game_use,cam_checked=cam,game,not b.get('cam_auto')
    uploader=str((info.get('channel') or info.get('uploader') or '')) if url else ''
    for i,c in enumerate(found):
-    if not moments and c.get('transcript'):
+    if picker=='current' and not moments and c.get('transcript'):
      try:
       import smart
       model=smart._model(profile!='action' or mode=='deep')
@@ -365,10 +381,16 @@ def make(b:dict):
     lang=language or ('hinglish' if (video_lang.startswith('hi') or c.get('language')=='hi') else None)
     body={'id':sid2,'start':start,'end':end,'layout':layout,'top':(top_h if isinstance(top_h,(int,float)) and .2<=top_h<=.5 else .32),'captions':True,'caption_style':style,'language':language,'hook':(' '.join(to_hinglish(w) for w in c.get('hook','').split()) if lang=='hinglish' else c.get('hook','')),
           'aspect':b.get('aspect','vertical'),'resolution':b.get('resolution',1080),'fps':b.get('fps',0),'title':c.get('title',''),'post_caption':c.get('title',''),'batch_id':job,'source_url':url,'cam':cam_use,'game':game_use,'features':c.get('features'),'weights_used':W,'moment_profile':profile,'focus_brief':focus_brief,'focus_match':c.get('focus_match'),'visual_review':c.get('visual_review')}
+    body.update(picker=picker,picker_label=moment_picker.PICKERS[picker],pick_reason=c.get('reason',''),
+                voice_line=c.get('voice_line',''),replay_line=c.get('replay_line',''))
     for k in styling.KEYS+brands.KEYS+hooks.KEYS:
      if b.get(k) not in (None,''):body[k]=b[k]
+    if picker!='current':
+     body.update(hook=c.get('voice_line',''),hook_duration=2.5,hook_background=False)
     if b.get('credit_auto') and uploader and not body.get('credit'):body['credit']='Clip: '+uploader[:40]
-    if acc!='fast' or not c.get('words'):
+    if not fast and not meta['has_audio']:
+     body['words']=[]
+    elif acc!='fast' or not c.get('words'):
      # local speech model: only when you ask for Accurate / Best, or the video has no YouTube captions (local files, Twitch)
      save(job,{'stage':f'Accurate captions {i+1}/{len(found)}'})
      body['words']=transcribe(DATA/(sid2+'.mp4'),start,end,DATA,lambda m:None,lang,(large_v3() if acc=='best' else None))['words']
@@ -383,7 +405,7 @@ def make(b:dict):
     while state.get(ej,{}).get('status')=='running':time.sleep(.7)
     r=state[ej]
     done.append({'viral':min(99,c['score']),'axes':axes(c.get('features') or {}),'file':ej,'start':c['start'],'end':c['end'],'title':c.get('title') or 'Clip %d'%(i+1),'hook':c.get('hook',''),'score':c['score'],'reason':c.get('reason',''),
-                 'error':r.get('error'),'srt':r.get('srt'),'visual_review':c.get('visual_review')})
+                 'error':r.get('error'),'srt':r.get('srt'),'visual_review':c.get('visual_review'),'voice_line':c.get('voice_line',''),'replay_line':c.get('replay_line','')})
     save(job,{'clips':list(done),'stage':f'Rendered {i+1}/{len(found)}','progress':.6+.4*(i+1)/len(found)})
    save(job,{'status':'done','stage':'Clips ready','progress':1,'elapsed_seconds':round(time.monotonic()-began,1)})
   except Exception as e:save(job,{'status':'error','error':str(e)[-600:]})

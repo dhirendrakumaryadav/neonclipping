@@ -173,7 +173,7 @@
     if (path === '/make' && body) {
       const extra = { ...styleFields(), cam_auto: !!($('cam-auto') && $('cam-auto').checked), credit_auto: !!$('st-credit-auto').checked };
       body = { ...extra, ...body, moment_profile:$('moment-profile')?.value||'balanced',focus_brief:$('focus-brief')?.value||'',include_phrases:$('focus-include')?.value||'',exclude_phrases:$('focus-exclude')?.value||'' };
-      if (window.__aiMoments) { body.moments = window.__aiMoments; window.__aiMoments = null; }
+      if (window.__aiMoments) { body.moments = window.__aiMoments; body.picker = 'current'; window.__aiMoments = null; }
     }
     if (path === '/live/start' && body && window.__liveOpts) body = { ...styleFields(), ...window.__liveOpts(), ...body };
     if (typeof path === 'string' && /^\/live\/[^/]+\/clip-now$/.test(path) && window.__liveOpts) body = { seconds: Number($('lv-len').value) || 38, ...(body || {}) };

@@ -853,8 +853,18 @@ def review_library_clip(file: str):
     hook = str(settings.get("hook") or "").strip()
     source_url = str(settings.get("source_url") or "").strip()
     caption = str(settings.get("post_caption") or "").strip()
+    voice = str(settings.get("voice_line") or "").strip()[:100]
+    replay = str(settings.get("replay_line") or "").strip()[:160]
+    picker = str(settings.get("picker_label") or "").strip()[:60]
+    detail = ("Picker: " + picker) if picker else "Sent from My Clips."
+    reason = str(settings.get("pick_reason") or "").strip()[:220]
+    if picker and reason:
+        detail += " · " + reason
+    take = "Opening take (2–3 s): " + voice if voice else hook
+    if voice and replay:
+        take += " · Optional payoff line: " + replay
     parts = [caption or title]
-    if hook and hook != title and hook not in parts[0]:
+    if hook and not voice and hook != title and hook not in parts[0]:
         parts.append(hook)
     if source_url.startswith(("https://", "http://")) and source_url not in parts[0]:
         parts.append("Source: " + source_url)
@@ -877,14 +887,14 @@ def review_library_clip(file: str):
         description = "\n\n".join(parts).encode("utf-8")[:5000].decode("utf-8", errors="ignore")
         if existing:
             connection.execute("""
-                UPDATE clips SET status='review', channel=NULL, publish_at=NULL, detail=?, library_description=?
+                UPDATE clips SET status='review', channel=NULL, publish_at=NULL, hook=?, detail=?, library_description=?
                 WHERE id=?
-            """, ("Sent from My Clips.", description, file))
+            """, (take, detail, description, file))
         else:
             connection.execute("""
                 INSERT INTO clips(id, source, title, hook, status, detail, library_description)
                 VALUES(?, ?, ?, ?, 'review', ?, ?)
-            """, (file, "library:" + file, title, hook, "Sent from My Clips.", description))
+            """, (file, "library:" + file, title, take, detail, description))
     return {"id": file, "status": "review", "added": True}
 
 

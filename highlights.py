@@ -103,7 +103,7 @@ def rank(source, duration, count=4, length=30, report=lambda seconds: None, moti
         top = sorted(parts, key=lambda k: -parts[k][int(center) - 3:int(center) + 4].mean() if len(parts[k]) else 0)[:2]
         clips.append({'start': round(start, 2), 'end': round(end, 2), 'title': f'Activity highlight {len(clips) + 1}',
                       'score': round(float(smooth[center]) * 100 / max(float(smooth.max()), 1e-6)),
-                      'reason': 'Peak: ' + ' + '.join(top), 'status': 'done',
+                      'reason': 'Peak: ' + ' + '.join(top), 'status': 'done', 'peak_time': float(center),
                       'features': {'loud': float(loud[lo:hi].mean()) if has_audio else None, 'shout': float(shout[lo:hi].mean()) if has_audio else None,
                                    'motion': float(motion[lo:hi].mean()) if motion_on else None, 'cuts': float(cut[lo:hi].mean()) if motion_on else None}})
         if len(clips) >= count: break
