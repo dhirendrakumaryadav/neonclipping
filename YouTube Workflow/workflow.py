@@ -1,5 +1,6 @@
 """Watch a local folder, queue NeonClipping jobs and submit explicitly approved private or scheduled uploads."""
 import hashlib
+import uuid
 import math
 import json
 import os
@@ -21,6 +22,8 @@ import httpx
 import keyring
 import live_upload
 import creator_queue
+import commentary_take
+import montage
 import review_insights
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -35,6 +38,7 @@ HERE = Path(__file__).resolve().parent
 ENGINE_DIR = HERE.parent / "app" if (HERE.parent / "app" / "app.py").is_file() else HERE.parent
 ROOT = Path(os.environ.get("NEON_WORKFLOW_HOME", HERE))
 DROP = ROOT / "Drop videos here"
+COMMENTARY = ROOT / "Commentary"
 CREATOR_DROP = ROOT / "Creator videos"
 SPEECH_MODELS = Path(os.environ.get("NEON_WORKFLOW_SPEECH", HERE.parent / "Data" / "models"))
 SETTINGS = ROOT / "Settings"
@@ -73,6 +77,7 @@ def db():
 
 def setup():
     DROP.mkdir(parents=True, exist_ok=True)
+    COMMENTARY.mkdir(parents=True, exist_ok=True)
     SETTINGS.mkdir(parents=True, exist_ok=True)
     CREATOR_DROP.mkdir(parents=True, exist_ok=True)
     with db() as connection:
@@ -86,6 +91,9 @@ def setup():
                 id TEXT PRIMARY KEY, source TEXT NOT NULL, title TEXT NOT NULL,
                 hook TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'review',
                 channel TEXT, youtube_id TEXT, detail TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS commentary_takes (
+                id TEXT PRIMARY KEY, clip TEXT NOT NULL, created REAL NOT NULL, caption_count INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS clip_packaging (
                 clip TEXT PRIMARY KEY, title TEXT NOT NULL,
@@ -109,6 +117,8 @@ def setup():
             connection.execute("ALTER TABLE clips ADD COLUMN removed_status TEXT")
         if "removed_at" not in columns:
             connection.execute("ALTER TABLE clips ADD COLUMN removed_at REAL")
+        if "commentary_take" not in columns:
+            connection.execute("ALTER TABLE clips ADD COLUMN commentary_take TEXT")
 
 
 def scan(seen):
@@ -389,7 +399,7 @@ def upload_one():
             return
         try:
             service = youtube(account)
-            path = DATA / f"{key}.mp4"
+            path = review_media_path(key, row["commentary_take"])
             if not path.is_file():
                 raise FileNotFoundError()
             media = MediaFileUpload(str(path), mimetype="video/mp4", chunksize=8 * 1024 * 1024, resumable=True)
@@ -583,6 +593,18 @@ async def lifetime(_app):
 
 
 app = FastAPI(lifespan=lifetime, docs_url=None, redoc_url=None, openapi_url=None)
+montage.attach(app, HERE.parent, DATA, HERE)
+
+
+@app.get("/montage/library")
+def montage_library():
+    try:
+        with httpx.Client(timeout=12, trust_env=False) as client:
+            clips = request(client, "GET", "/library")
+    except (ValueError, httpx.HTTPError) as error:
+        raise HTTPException(503, "Start the NeonClipping editor to load My Clips.") from error
+    return [{"id": clip["id"], "title": clip["title"], "duration": clip["meta"]["duration"]}
+            for clip in clips if HEX_ID.fullmatch(clip["id"]) and clip.get("meta", {}).get("duration")]
 
 
 @app.middleware("http")
@@ -591,7 +613,10 @@ async def local_only(incoming: Request, proceed):
         return HTMLResponse("Open the queue on this laptop at " + ORIGIN, status_code=403)
     origin = incoming.headers.get("origin")
     library_request = LIBRARY_ROUTE.fullmatch(incoming.url.path)
-    if library_request and incoming.method in {"OPTIONS", "POST"}:
+    local_request = incoming.method == "POST" and origin in (None, ORIGIN) and secrets.compare_digest(
+        incoming.headers.get("x-workflow-token", ""), SECRET
+    )
+    if library_request and incoming.method in {"OPTIONS", "POST"} and not local_request:
         if origin not in LIBRARY_ORIGINS:
             return HTMLResponse("Open My Clips in the local NeonClipping studio.", status_code=403)
         if incoming.method == "OPTIONS":
@@ -628,13 +653,20 @@ def insights_script():
     return FileResponse(HERE / "review-insights.js", media_type="text/javascript")
 
 
-def packaging_media(file):
+def review_media_path(clip, take):
+    if take:
+        return COMMENTARY / f"{take}.mp4"
+    return DATA / f"{clip}.mp4"
+
+
+def packaging_media(file, original=False):
     if not HEX_ID.fullmatch(file):
         raise HTTPException(404, "Clip not found.")
     with db() as connection:
-        if not connection.execute("SELECT 1 FROM clips WHERE id=? AND status='review'", (file,)).fetchone():
+        clip = connection.execute("SELECT commentary_take FROM clips WHERE id=? AND status='review'", (file,)).fetchone()
+        if not clip:
             raise HTTPException(404, "Clip is no longer waiting for review.")
-    media = DATA / f"{file}.mp4"
+    media = review_media_path(file, None if original else clip["commentary_take"])
     if not media.is_file():
         raise HTTPException(404, "The finished clip is no longer on this laptop.")
     return media
@@ -691,9 +723,7 @@ def save_packaging(file: str, body: dict):
             raise ValueError()
     except (KeyError, TypeError, ValueError, OverflowError):
         raise HTTPException(400, "Choose a valid frame from the clip.") from None
-    media = DATA / f"{file}.mp4"
-    if not media.is_file():
-        raise HTTPException(404, "The finished clip is no longer on this laptop.")
+    media = packaging_media(file)
     try:
         _, _, duration = probe_video(media)
     except (ValueError, KeyError, StopIteration, OSError, subprocess.SubprocessError):
@@ -733,7 +763,8 @@ def state():
         sources = [dict(row) for row in connection.execute("SELECT * FROM sources ORDER BY created DESC")]
         clips = [dict(row) for row in connection.execute("""
             SELECT v.*, p.name AS creator_name, k.cover_seconds, k.cover_text,
-                   k.title=v.title AS packaging_checked
+                   k.title=v.title AS packaging_checked,
+                   (SELECT id FROM commentary_takes WHERE clip=v.id ORDER BY created DESC LIMIT 1) AS commentary_latest
             FROM clips v LEFT JOIN clip_packaging k ON k.clip=v.id
             LEFT JOIN creator_candidates c ON c.clip=v.id LEFT JOIN creator_profiles p ON p.id=c.creator
             WHERE v.status<>'removed'
@@ -898,14 +929,200 @@ def review_library_clip(file: str):
     return {"id": file, "status": "review", "added": True}
 
 
+@app.get("/commentary.js")
+def commentary_script():
+    return FileResponse(HERE / "commentary.js", media_type="text/javascript")
+
+
+@app.get("/review/{file}/commentary/original")
+def commentary_original(file: str):
+    return FileResponse(packaging_media(file, original=True), media_type="video/mp4")
+
+
+@app.post("/review/{file}/commentary/draft")
+def commentary_draft(file: str, body: dict):
+    media = packaging_media(file, original=True)
+    angle = body.get("angle", "")
+    if not isinstance(angle, str) or len(angle) > 350:
+        raise HTTPException(400, "Keep your observation under 350 characters.")
+    try:
+        offset = float(body.get("offset", 0))
+        _, _, duration = probe_video(media)
+        if not math.isfinite(offset) or not 0 <= offset < duration:
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, StopIteration, OSError, subprocess.SubprocessError):
+        raise HTTPException(400, "Choose a start time within the clip.") from None
+    with db() as connection:
+        clip = connection.execute("SELECT title,hook FROM clips WHERE id=?", (file,)).fetchone()
+    transcript = ""
+    subtitles = DATA / f"{file}.srt"
+    try:
+        with subtitles.open(encoding="utf-8-sig") as stream:
+            transcript = " ".join(line.strip() for line in stream.read(4500).splitlines()
+                                  if line.strip() and not line.strip().isdigit() and "-->" not in line)[:1200]
+    except (OSError, UnicodeError):
+        pass
+    draft, source = commentary_take.draft_script(clip["title"], clip["hook"], transcript, angle.strip(), duration - offset)
+    return {"draft": draft, "source": source}
+
+
+def clip_moment(file):
+    """What NeonClipping's picker saved about this clip (voice line, reason, what happens on screen)."""
+    try:
+        settings = json.loads((DATA / f"{file}.json").read_text(encoding="utf-8")).get("settings") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if not isinstance(settings, dict):
+        return {}
+    review = settings.get("visual_review") if isinstance(settings.get("visual_review"), dict) else {}
+    return {"voice_line": str(settings.get("voice_line") or "")[:200],
+            "pick_reason": str(settings.get("pick_reason") or "")[:300],
+            "replay_line": str(settings.get("replay_line") or "")[:200],
+            "payoff_at": settings.get("payoff_at"),
+            "outcome": str(review.get("outcome") or "")[:300]}
+
+
+@app.get("/review/{file}/commentary/lines")
+def commentary_lines(file: str):
+    packaging_media(file, original=True)
+    moment = clip_moment(file)
+    payoff = moment.get("replay_line", "")
+    # Daily batches already store the timestamp as part of the payoff line.
+    timed = re.match(r"^(\d+(?:\.\d+)?)\s*s\s*·\s*(.+)$", payoff)
+    if timed:
+        payoff = timed[2]
+    try:
+        at = float(moment.get("payoff_at") if moment.get("payoff_at") is not None else timed[1])
+        if not math.isfinite(at) or at < .25:
+            at = None
+    except (TypeError, ValueError):
+        at = None
+    return {"opening": moment.get("voice_line", ""), "payoff": payoff, "payoff_at": at}
+
+
+@app.post("/review/{file}/commentary/script")
+def commentary_full_script(file: str, body: dict):
+    media = packaging_media(file, original=True)
+    style, angle = body.get("style", "funny"), body.get("angle", "")
+    if style not in commentary_take.STYLES or not isinstance(angle, str) or len(angle) > 350:
+        raise HTTPException(400, "Choose a style and keep your observation under 350 characters.")
+    try:
+        offset = float(body.get("offset", 0))
+        _, _, duration = probe_video(media)
+        if not math.isfinite(offset) or not 0 <= offset < duration:
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, StopIteration, OSError, subprocess.SubprocessError):
+        raise HTTPException(400, "Choose a start time within the clip.") from None
+    with db() as connection:
+        clip = connection.execute("SELECT title FROM clips WHERE id=?", (file,)).fetchone()
+    if not clip:
+        raise HTTPException(404, "This clip is no longer in the queue.")
+    transcript = ""
+    try:
+        with (DATA / f"{file}.srt").open(encoding="utf-8-sig") as stream:
+            transcript = " ".join(line.strip() for line in stream.read(6000).splitlines()
+                                  if line.strip() and not line.strip().isdigit() and "-->" not in line)[:1800]
+    except (OSError, UnicodeError):
+        pass
+    try:
+        voice = (SETTINGS / "voice.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        voice = ""
+    lines, source = commentary_take.write_script(clip["title"], transcript, angle.strip(), duration - offset,
+                                                 style, voice, clip_moment(file))
+    return {"lines": lines, "source": source}
+
+
+@app.post("/review/{file}/commentary/render")
+def commentary_render(file: str, recording: UploadFile | None = File(None),
+                      offset: float = Form(0), language: str = Form("auto"),
+                      opening: UploadFile | None = File(None), payoff: UploadFile | None = File(None),
+                      payoff_offset: float = Form(0)):
+    if (recording and (opening or payoff)) or not (recording or opening or payoff):
+        raise HTTPException(400, "Choose a full take or at least one separate line.")
+    if payoff and (not math.isfinite(payoff_offset) or payoff_offset < .25):
+        raise HTTPException(400, "Choose a payoff time inside the clip.")
+    original = packaging_media(file, original=True)
+    if not math.isfinite(offset) or offset < 0 or language not in commentary_take.LANGUAGES:
+        raise HTTPException(400, "Choose a valid start time and caption language.")
+    if not commentary_take.RENDER_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "A commentary take is already processing. Try again when it finishes.")
+    key = uuid.uuid4().hex
+    try:
+        with TemporaryDirectory(dir=COMMENTARY, prefix="take-") as temporary:
+            work = Path(temporary)
+            takes = ((recording, offset),) if recording else ((opening, 0), (payoff, payoff_offset))
+            parts = []
+            for index, (upload, start) in enumerate(takes):
+                if upload is None:
+                    continue
+                content = upload.file.read(commentary_take.MAX_TAKE_BYTES + 1)
+                if not content or len(content) > commentary_take.MAX_TAKE_BYTES:
+                    raise HTTPException(400, "Choose a recording under 20 MB for each line.")
+                raw = work / f"recording-{index}"
+                raw.write_bytes(content)
+                parts.append((raw, start))
+            try:
+                result, captions = commentary_take.render_parts(HERE.parent, SPEECH_MODELS, original,
+                                                                parts, language, work)
+            except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
+                raise HTTPException(400, str(error)) from error
+            with LOCK, db() as connection:
+                if not connection.execute("SELECT 1 FROM clips WHERE id=? AND status='review'", (file,)).fetchone():
+                    raise HTTPException(409, "This clip changed while the take was rendering.")
+                result.replace(review_media_path(file, key))
+                connection.execute("INSERT INTO commentary_takes VALUES(?,?,?,?)", (key, file, time.time(), captions))
+    finally:
+        commentary_take.RENDER_LOCK.release()
+    return {"take": key, "caption_count": captions, "preview": f"/review/{file}/commentary/takes/{key}"}
+
+
+@app.get("/review/{file}/commentary/takes/{take}")
+def commentary_preview(file: str, take: str):
+    if not HEX_ID.fullmatch(file) or not HEX_ID.fullmatch(take):
+        raise HTTPException(404, "Take not found.")
+    with db() as connection:
+        if not connection.execute("SELECT 1 FROM commentary_takes WHERE clip=? AND id=?", (file, take)).fetchone():
+            raise HTTPException(404, "Take not found.")
+    media = review_media_path(file, take)
+    if not media.is_file():
+        raise HTTPException(404, "The commentary preview is missing.")
+    return FileResponse(media, media_type="video/mp4")
+
+
+@app.post("/review/{file}/commentary/use")
+def commentary_use(file: str, body: dict):
+    take = body.get("take")
+    if 'take' not in body or not HEX_ID.fullmatch(file) or (take is not None and (
+        not isinstance(take, str) or not HEX_ID.fullmatch(take)
+    )):
+        raise HTTPException(400, "Choose a valid commentary take.")
+    with LOCK, db() as connection:
+        clip = connection.execute("SELECT commentary_take FROM clips WHERE id=? AND status='review'", (file,)).fetchone()
+        if not clip:
+            raise HTTPException(409, "This clip is no longer waiting for review.")
+        if take and (
+            not connection.execute("SELECT 1 FROM commentary_takes WHERE clip=? AND id=?", (file, take)).fetchone()
+            or not review_media_path(file, take).is_file()
+        ):
+            raise HTTPException(404, "Commentary take not found.")
+        if take != clip["commentary_take"]:
+            connection.execute("UPDATE clips SET commentary_take=?, detail=? WHERE id=?", (
+                take, "Commentary ready for approval." if take else "Original clip restored.", file,
+            ))
+            connection.execute("DELETE FROM clip_packaging WHERE clip=?", (file,))
+    return {"take": take}
+
+
 @app.get("/preview/{file}")
 def preview(file: str):
     if not HEX_ID.fullmatch(file):
         raise HTTPException(404, "Clip not found.")
     with db() as connection:
-        if not connection.execute("SELECT 1 FROM clips WHERE id=?", (file,)).fetchone():
+        row = connection.execute("SELECT commentary_take FROM clips WHERE id=?", (file,)).fetchone()
+        if not row:
             raise HTTPException(404, "Clip not found.")
-    return FileResponse(DATA / f"{file}.mp4", media_type="video/mp4")
+    return FileResponse(review_media_path(file, row["commentary_take"]), media_type="video/mp4")
 
 
 @app.post("/connect")

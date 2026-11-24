@@ -27,13 +27,32 @@ code{color:#e3dbff;overflow-wrap:anywhere}
 .item p{font-size:.92rem;margin:.2rem 0}
 .item label{display:flex;gap:.65rem;align-items:baseline}
 #message{color:#f9ce94}
-#packaging{background:#1b1e29;color:#eee;border:1px solid #535970;border-radius:14px;padding:1.2rem;width:min(720px,calc(100vw - 2rem));max-height:calc(100vh - 2rem)}
-#packaging::backdrop{background:#0a0c12bb}
+#packaging,#commentary-dialog{background:#1b1e29;color:#eee;border:1px solid #535970;border-radius:14px;padding:1.2rem;width:min(720px,calc(100vw - 2rem));max-height:calc(100vh - 2rem)}
+#packaging::backdrop,#commentary-dialog::backdrop{background:#0a0c12bb}
 .packaging-grid{display:grid;grid-template-columns:minmax(130px,220px) minmax(0,1fr);gap:1rem;margin-top:1rem;align-items:start}
 .packaging-fields label{display:grid;gap:.3rem;margin-bottom:.8rem}
 .packaging-fields input[type=text]{font:inherit;color:inherit;background:#151822;border:1px solid #68617c;padding:.5rem;border-radius:8px;width:100%}
 #cover-frame{display:block;width:100%;aspect-ratio:9/16;max-height:350px;object-fit:contain;background:#10131d;border-radius:8px}
 #cover-time,#retention-point{width:100%}
+#combine-clips video{display:block;width:100%;max-height:360px;background:#11131b;border-radius:8px;margin:.65rem 0}
+#combine-clips video[hidden]{display:none}
+#montage-library{max-width:min(100%,300px)}
+#montage-parts{padding-left:1.4rem}
+#montage-parts label{font-size:.9rem}
+#montage-parts input{width:6rem}
+.montage-fields label{display:grid;gap:.3rem;margin:.65rem 0}
+.montage-fields input,.montage-fields textarea{width:100%;font:inherit;color:inherit;background:#151822;border:1px solid #68617c;border-radius:8px;padding:.45rem}
+#montage-export{margin-top:.65rem}
+.commentary-editor{display:grid;grid-template-columns:minmax(140px,220px) minmax(0,1fr);gap:1rem;margin-top:.8rem;align-items:start}
+.commentary-editor video{display:block;width:100%;max-height:360px;background:#11131b;border-radius:8px}
+.commentary-fields label{display:grid;gap:.25rem;margin:.55rem 0}
+.commentary-fields textarea,.commentary-fields input[type=text]{font:inherit;color:inherit;background:#151822;border:1px solid #68617c;padding:.5rem;border-radius:8px;width:100%}
+.commentary-controls{display:flex;gap:.45rem;flex-wrap:wrap;margin:.65rem 0}
+.commentary-line{border-top:1px solid #3c4050;padding:.65rem 0}
+.commentary-line p{margin:.35rem 0 .55rem}
+.commentary-line input{max-width:7rem}
+#commentary-dialog [hidden]{display:none}
+@media(max-width:560px){.commentary-editor{grid-template-columns:1fr}.commentary-editor video{max-height:230px}}
 #package-checks{padding-left:1.2rem;color:#efd4a5}
 #retention-chart{display:block;width:100%;height:auto;margin:.7rem 0}
 #retention-drops{padding-left:1.2rem}
@@ -45,6 +64,7 @@ code{color:#e3dbff;overflow-wrap:anywhere}
 <h1>YouTube queue</h1>
 <p>Drop in a video, review the clips, then keep them private or schedule their release.</p>
 <a href="http://127.0.0.1:8770/" target="_blank" rel="noopener">Open NeonClipping</a>
+<a href="#combine-clips">Combine clips</a>
 <main>
 <section>
 <h2>Drop folder</h2>
@@ -140,6 +160,34 @@ code{color:#e3dbff;overflow-wrap:anywhere}
 <div id="removed-clips"></div>
 </details>
 </section>
+<section id="combine-clips">
+<h2>Combine clips</h2>
+<p>Trim and reorder footage, then export one vertical Short.</p>
+<div class="publish-controls">
+<label>My Clips <select id="montage-library"><option value="">Choose a saved clip</option></select></label>
+<button id="montage-add" type="button" disabled>Add clip</button>
+<label>Or add video files <input id="montage-file" type="file" accept="video/*,.mkv,.mov,.webm,.avi" multiple></label>
+</div>
+<ol id="montage-parts"></ol>
+<video id="montage-source" controls playsinline preload="metadata" hidden></video>
+<form id="montage-form">
+<div class="montage-fields">
+<label>Title<input type="text" id="montage-title" maxlength="100" required></label>
+<label>Description and source credits<textarea id="montage-caption" rows="3" maxlength="5000"></textarea></label>
+</div>
+<div class="publish-controls">
+<label>Background music <input id="montage-music" type="file" accept="audio/*,.mp3,.wav,.m4a,.flac"></label>
+<label>Music volume <input id="montage-volume" type="range" min="0" max="100" value="14"><output id="montage-level">14%</output></label>
+<button id="montage-clear-music" type="button" disabled>Remove music</button>
+</div>
+<button id="montage-export" type="submit" class="primary" disabled>Export combined Short</button>
+</form>
+<p id="montage-status" role="status"></p>
+<div id="montage-result" hidden>
+<video id="montage-preview" controls playsinline preload="metadata"></video>
+<div><button id="montage-review" type="button">Send to Review clips</button></div>
+</div>
+</section>
 <section id="retention-analysis">
 <h2>Retention Analysis</h2>
 <p>Import the audience-retention CSV for one video from YouTube Studio → Analytics → Engagement.</p>
@@ -180,6 +228,56 @@ code{color:#e3dbff;overflow-wrap:anywhere}
 </div>
 </div>
 </form>
+</dialog>
+<dialog id="commentary-dialog" aria-labelledby="commentary-heading">
+<div class="row"><h2 id="commentary-heading">Record commentary</h2><button id="close-commentary" type="button">Close</button></div>
+<div class="commentary-editor">
+<div>
+<label for="commentary-source">Original clip</label>
+<video id="commentary-source" controls playsinline preload="metadata"></video>
+<div id="full-offset"><label for="commentary-offset">Start voice at (seconds)</label>
+<input id="commentary-offset" type="number" min="0" step="any" value="0"></div>
+</div>
+<div class="commentary-fields">
+<div id="split-commentary" hidden>
+<div class="commentary-line">
+<strong>Opening · 0:00</strong>
+<p id="opening-words"></p>
+<button id="record-opening" type="button" class="primary">Record opening</button>
+</div>
+<div class="commentary-line">
+<strong>Payoff</strong>
+<label>Start at (seconds)<input id="payoff-offset" type="number" min=".25" step="any"></label>
+<p id="payoff-words"></p>
+<button id="record-payoff" type="button" class="primary">Record payoff</button>
+</div>
+</div>
+<div id="full-script-fields">
+<label>What stood out to you? <input id="commentary-angle" type="text" maxlength="350" placeholder="One detail you can explain or react to"></label>
+<div class="commentary-controls">
+<button id="draft-commentary" type="button">Suggest one line</button>
+<select id="commentary-style" aria-label="Commentary style"><option value="funny">Funny (deadpan)</option><option value="hype">Hype</option><option value="story">Documentary narrator</option><option value="emotional">Emotional</option></select>
+<button id="script-commentary" type="button">Write full script</button>
+</div>
+<label>Script to read<textarea id="commentary-draft" rows="7" maxlength="1500" placeholder="Write your own take, or use a draft. [0:05] marks when to say a line."></textarea></label>
+</div>
+<label>Caption language<select id="commentary-language"><option value="auto">Detect automatically</option><option value="en">English</option><option value="hi">Hindi</option></select></label>
+<div class="commentary-controls">
+<button id="record-take" class="primary" type="button">Record full take</button>
+<button id="stop-take" type="button" disabled>Stop recording</button>
+</div>
+<label id="full-recording-file">Or choose a recording<input type="file" id="commentary-file" accept="audio/*,.mp4,.webm,.m4a,.ogg,.wav"></label>
+<p id="commentary-recording"></p>
+<button id="render-take" type="button" disabled>Enhance and preview</button>
+<p id="commentary-status" role="status"></p>
+<div id="commentary-result" hidden>
+<p>Enhanced preview with voice captions</p>
+<video id="commentary-preview" controls playsinline preload="metadata"></video>
+<div class="commentary-controls">
+<button id="apply-commentary" type="button" class="primary" disabled>Use this preview</button>
+<button id="restore-commentary" type="button" hidden>Restore original</button>
+</div></div>
+</div></div>
 </dialog>
 <script>
 const token = document.querySelector('meta[name="workflow-token"]').content;
@@ -392,6 +490,12 @@ function show(s) {
             check.type = 'button';
             check.onclick = () => openPackaging(clip);
             item.append(' · ', check);
+            for (const [label, mode] of [['Record opening', 'opening'], ['Record payoff', 'payoff'], ['Full take', 'full']]) {
+                const commentary = create('button', label);
+                commentary.type = 'button';
+                commentary.onclick = () => openCommentary(clip, mode);
+                item.append(' · ', commentary);
+            }
         }
         if (clip.youtube_id) {
             item.append(' · ', link('Open in YouTube Studio', 'https://studio.youtube.com/video/' + encodeURIComponent(clip.youtube_id) + '/edit'));
@@ -623,4 +727,6 @@ refresh().catch(error);
 setInterval(() => refresh().catch(error), 3000);
 </script>
 <script src="/review-insights.js"></script>
+<script src="/commentary.js"></script>
+<script src="/montage.js"></script>
 </html>

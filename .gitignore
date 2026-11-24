@@ -68,6 +68,11 @@ __pycache__/
 !YouTube Workflow/queue.html
 !YouTube Workflow/review_insights.py
 !YouTube Workflow/review-insights.js
+!YouTube Workflow/commentary_take.py
+!YouTube Workflow/commentary.js
+!YouTube Workflow/montage.py
+!YouTube Workflow/montage.js
+YouTube Workflow/Commentary/
 !YouTube Workflow/Start YouTube Queue.ps1
 !YouTube Workflow/requirements.txt
 YouTube Workflow/Settings/
